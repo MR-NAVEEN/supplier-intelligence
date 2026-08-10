@@ -1,0 +1,111 @@
+from django.contrib.auth import get_user_model
+from rest_framework import permissions, status
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from rest_framework_simplejwt.tokens import RefreshToken
+
+from api.common.responses import success_envelope
+from api.workspaces.models import WorkspaceMembership
+
+User = get_user_model()
+
+
+class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
+    username_field = User.EMAIL_FIELD
+
+    @classmethod
+    def get_token(cls, user):
+        token = super().get_token(user)
+        token['email'] = user.email
+        return token
+
+
+class EmailTokenObtainPairView(TokenObtainPairView):
+    serializer_class = EmailTokenObtainPairSerializer
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        response = super().post(request, *args, **kwargs)
+        if response.status_code == 200:
+            return success_envelope(response.data, 'Login successful')
+        return response
+
+
+class TokenRefreshEnvelopeView(TokenRefreshView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        response = super().post(request, *args, **kwargs)
+        if response.status_code == 200:
+            return success_envelope(response.data, 'Token refreshed')
+        return response
+
+
+class TokenBlacklistView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        refresh = request.data.get('refresh')
+        if not refresh:
+            return Response({'detail': 'refresh token required'}, status=status.HTTP_400_BAD_REQUEST)
+        token = RefreshToken(refresh)
+        token.blacklist()
+        return success_envelope(None, 'Logged out successfully')
+
+
+class MeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        memberships = WorkspaceMembership.objects.filter(user=user).select_related('workspace')
+        workspace_id = request.headers.get('X-Workspace-Id')
+        current = None
+        role = None
+        permissions_list = []
+        workspaces = []
+        for m in memberships:
+            ws_data = {
+                'id': str(m.workspace_id),
+                'name': m.workspace.name,
+                'slug': m.workspace.slug,
+                'role': m.role,
+            }
+            workspaces.append(ws_data)
+            if workspace_id and str(m.workspace_id) == str(workspace_id):
+                current = ws_data
+                role = m.role
+        if current is None and workspaces:
+            current = workspaces[0]
+            role = workspaces[0]['role']
+        if role == 'admin':
+            permissions_list = ['*']
+        else:
+            permissions_list = ['read', 'write']
+        data = {
+            'user': {
+                'id': user.id,
+                'email': user.email,
+                'first_name': user.first_name,
+                'last_name': user.last_name,
+                'phone': user.phone,
+                'timezone': user.timezone,
+            },
+            'workspace': current,
+            'role': role,
+            'permissions': permissions_list,
+            'workspaces': workspaces,
+        }
+        return success_envelope(data)
+
+
+class PasswordResetView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        email = request.data.get('email')
+        if not email:
+            return Response({'detail': 'email required'}, status=status.HTTP_400_BAD_REQUEST)
+        return success_envelope({'email': email}, 'If the account exists, reset instructions were sent.')
