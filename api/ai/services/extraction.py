@@ -5,10 +5,29 @@ import re
 import tempfile
 import time
 
-import fitz
-from openai import OpenAI
+try:
+    import pymupdf as fitz
+except Exception:  # wrong `fitz` package or missing PyMuPDF Windows DLL
+    fitz = None
+
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
 
 from api.ai.prompts import SYSTEM_PROMPT
+
+_PYMUPDF_INSTALL_HINT = (
+    'PyMuPDF is not available. Uninstall wrong packages with '
+    '`pip uninstall fitz frontend -y`, install `pip install --force-reinstall PyMuPDF`, '
+    'and install Microsoft Visual C++ Redistributable (x64) if Windows reports '
+    'DLL load failed for _extra.'
+)
+
+
+def _require_fitz():
+    if fitz is None:
+        raise RuntimeError(_PYMUPDF_INSTALL_HINT)
 
 MODEL_TIERS = {
     'budget': os.environ.get('AI_MODEL_BUDGET', 'gpt-5.6-luna'),
@@ -18,6 +37,7 @@ MODEL_TIERS = {
 
 
 def pdf_page_count(pdf_path):
+    _require_fitz()
     doc = fitz.open(pdf_path)
     try:
         return len(doc)
@@ -151,6 +171,9 @@ def extract_page(client, model_name, image_path, page_num, width, height, retrie
 
 def extract_catalogue(pdf_path, page_numbers, model_name, dpi=200):
     """page_numbers are 1-based. Returns result dict + usage totals + skip count."""
+    _require_fitz()
+    if OpenAI is None:
+        raise RuntimeError('openai package is not installed. Run: pip install openai')
     api_key = os.environ.get('OPENAI_API_KEY', '')
     if not api_key:
         raise RuntimeError('OPENAI_API_KEY is not set.')
