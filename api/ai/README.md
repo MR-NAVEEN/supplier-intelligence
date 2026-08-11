@@ -4,7 +4,7 @@ All extraction logic lives in this app. Other backend apps are not modified.
 
 ## Endpoints
 
-Requires `Authorization: Bearer <token>` and `X-Workspace-Id`.
+AI endpoints are open for demo/testing (no login / no `X-Workspace-Id`). Other project APIs still require auth.
 
 ### `POST /api/ai/extract/`
 
@@ -28,3 +28,19 @@ List recent runs for the workspace.
 ### `GET /api/ai/extract/{id}/`
 
 Fetch a saved run.
+
+## Schema GET APIs (normalized catalogue data)
+
+Extract still returns the original payload. After a successful run, rows are also saved to `AICatalogue` / pages / products.
+
+### `GET /api/ai/catalogues/`
+
+List saved catalogues.
+
+### `GET /api/ai/catalogues/{id}/`
+
+Full schema: catalogue + current pages + current products.
+
+### `GET /api/ai/catalogues/{id}/products/`
+
+Product rows only. Optional query: `?sku=TSCG` `&page_number=16`

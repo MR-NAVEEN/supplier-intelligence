@@ -1,6 +1,13 @@
 from rest_framework import serializers
 
-from .models import AICatalogueUpload, AIExtractionRun
+from .models import (
+    AIBusinessCard,
+    AICatalogue,
+    AICatalogueUpload,
+    AIExtractedPage,
+    AIExtractedProduct,
+    AIExtractionRun,
+)
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
@@ -110,6 +117,104 @@ class AIExtractionRunSerializer(serializers.ModelSerializer):
         }
 
 
+class AIExtractedProductSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AIExtractedProduct
+        fields = (
+            'id',
+            'page_number',
+            'product_name',
+            'code_or_sku',
+            'price',
+            'price_raw',
+            'currency',
+            'description',
+            'series',
+            'attributes',
+            'is_current',
+            'created_at',
+        )
+        read_only_fields = fields
+
+
+class AIExtractedPageSerializer(serializers.ModelSerializer):
+    products = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AIExtractedPage
+        fields = (
+            'id',
+            'page_number',
+            'page_type',
+            'series_or_section_title',
+            'raw_text_summary',
+            'page_notes',
+            'is_current',
+            'products',
+        )
+        read_only_fields = fields
+
+    def get_products(self, obj):
+        qs = obj.products.filter(is_current=True)
+        return AIExtractedProductSerializer(qs, many=True).data
+
+
+class AICatalogueListSerializer(serializers.ModelSerializer):
+    products_count = serializers.SerializerMethodField()
+    pages_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AICatalogue
+        fields = (
+            'id',
+            'title',
+            'brand',
+            'source_filename',
+            'total_pages',
+            'current_run',
+            'products_count',
+            'pages_count',
+            'created_at',
+            'updated_at',
+        )
+        read_only_fields = fields
+
+    def get_products_count(self, obj):
+        return obj.products.filter(is_current=True).count()
+
+    def get_pages_count(self, obj):
+        return obj.pages.filter(is_current=True).count()
+
+
+class AICatalogueSchemaSerializer(serializers.ModelSerializer):
+    pages = serializers.SerializerMethodField()
+    products = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AICatalogue
+        fields = (
+            'id',
+            'title',
+            'brand',
+            'source_filename',
+            'total_pages',
+            'current_run',
+            'pages',
+            'products',
+            'created_at',
+            'updated_at',
+        )
+        read_only_fields = fields
+
+    def get_pages(self, obj):
+        qs = obj.pages.filter(is_current=True).prefetch_related('products')
+        return AIExtractedPageSerializer(qs, many=True).data
+
+    def get_products(self, obj):
+        qs = obj.products.filter(is_current=True)
+        return AIExtractedProductSerializer(qs, many=True).data
+
+
 class AIExtractionRunListSerializer(serializers.ModelSerializer):
     source_file = serializers.CharField(source='upload.original_filename', read_only=True)
 
@@ -123,6 +228,106 @@ class AIExtractionRunListSerializer(serializers.ModelSerializer):
             'pages_requested',
             'pages_kept',
             'products_count',
+            'duration_ms',
+            'estimated_cost_usd',
+            'created_at',
+        )
+        read_only_fields = fields
+
+
+CARD_CONTENT_TYPES = {
+    'image/jpeg',
+    'image/jpg',
+    'image/png',
+    'image/webp',
+    'image/gif',
+}
+CARD_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+
+
+class AICardExtractRequestSerializer(serializers.Serializer):
+    file = serializers.FileField()
+    model_tier = serializers.ChoiceField(
+        choices=AIExtractionRun.MODEL_TIER_CHOICES,
+        required=False,
+        default=AIExtractionRun.TIER_HIGH,
+    )
+
+    def validate_file(self, value):
+        name = (getattr(value, 'name', '') or '').lower()
+        content_type = (getattr(value, 'content_type', '') or '').lower()
+        ext = ''
+        if '.' in name:
+            ext = '.' + name.rsplit('.', 1)[-1]
+        if ext not in CARD_EXTENSIONS and content_type not in CARD_CONTENT_TYPES:
+            raise serializers.ValidationError('Upload a card image (jpg, png, webp).')
+        size = getattr(value, 'size', 0) or 0
+        if size > MAX_UPLOAD_BYTES:
+            raise serializers.ValidationError('File is larger than 50 MB.')
+        return value
+
+
+class AIBusinessCardSerializer(serializers.ModelSerializer):
+    timing = serializers.SerializerMethodField()
+    costing = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AIBusinessCard
+        fields = (
+            'id',
+            'original_filename',
+            'status',
+            'full_name',
+            'job_title',
+            'company',
+            'emails',
+            'phones',
+            'website',
+            'address',
+            'linkedin',
+            'extras',
+            'extra_text',
+            'result_json',
+            'model_name',
+            'timing',
+            'costing',
+            'error_message',
+            'created_at',
+        )
+        read_only_fields = fields
+
+    def get_timing(self, obj):
+        return {
+            'started_at': obj.started_at,
+            'finished_at': obj.finished_at,
+            'duration_ms': obj.duration_ms,
+            'duration_seconds': round((obj.duration_ms or 0) / 1000, 2),
+        }
+
+    def get_costing(self, obj):
+        return {
+            'currency': 'USD',
+            'estimated_cost_usd': str(obj.estimated_cost_usd),
+            'prompt_tokens': obj.prompt_tokens,
+            'completion_tokens': obj.completion_tokens,
+            'total_tokens': obj.total_tokens,
+            'model_name': obj.model_name,
+            'breakdown': obj.cost_breakdown or {},
+        }
+
+
+class AIBusinessCardListSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AIBusinessCard
+        fields = (
+            'id',
+            'original_filename',
+            'status',
+            'full_name',
+            'job_title',
+            'company',
+            'emails',
+            'phones',
             'duration_ms',
             'estimated_cost_usd',
             'created_at',
