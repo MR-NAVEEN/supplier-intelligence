@@ -43,6 +43,7 @@ INSTALLED_APPS = [
     'api.settings_app',
     'api.activity',
     'api.analytics',
+    'api.ai',
 ]
 
 MIDDLEWARE = [

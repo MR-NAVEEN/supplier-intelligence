@@ -21,6 +21,7 @@ urlpatterns = [
     path('api/settings/', include('api.settings_app.urls')),
     path('api/activity/', include('api.activity.urls')),
     path('api/analytics/', include('api.analytics.urls')),
+    path('api/ai/', include('api.ai.urls')),
 ]
 
 if settings.DEBUG:
