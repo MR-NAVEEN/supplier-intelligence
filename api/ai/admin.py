@@ -1,6 +1,19 @@
 from django.contrib import admin
 
-from .models import AICatalogueUpload, AIExtractionRun
+from .models import (
+    AIBusinessCard,
+    AICatalogue,
+    AICatalogueUpload,
+    AIExtractedPage,
+    AIExtractedProduct,
+    AIExtractionRun,
+)
+
+
+@admin.register(AICatalogue)
+class AICatalogueAdmin(admin.ModelAdmin):
+    list_display = ('id', 'title', 'source_filename', 'workspace', 'current_run', 'created_at')
+    readonly_fields = ('created_at', 'updated_at')
 
 
 @admin.register(AICatalogueUpload)
@@ -21,4 +34,20 @@ class AIExtractionRunAdmin(admin.ModelAdmin):
         'estimated_cost_usd',
         'created_at',
     )
+    readonly_fields = ('created_at', 'updated_at', 'result_json', 'cost_breakdown')
+
+
+@admin.register(AIExtractedPage)
+class AIExtractedPageAdmin(admin.ModelAdmin):
+    list_display = ('id', 'catalogue', 'page_number', 'series_or_section_title', 'is_current')
+
+
+@admin.register(AIExtractedProduct)
+class AIExtractedProductAdmin(admin.ModelAdmin):
+    list_display = ('id', 'product_name', 'code_or_sku', 'price_raw', 'page_number', 'is_current')
+
+
+@admin.register(AIBusinessCard)
+class AIBusinessCardAdmin(admin.ModelAdmin):
+    list_display = ('id', 'full_name', 'company', 'status', 'created_at')
     readonly_fields = ('created_at', 'updated_at', 'result_json', 'cost_breakdown')
