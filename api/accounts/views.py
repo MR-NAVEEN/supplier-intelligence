@@ -9,6 +9,8 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from api.common.responses import success_envelope
 from api.workspaces.models import WorkspaceMembership
 
+from .serializers import SignupSerializer, UserSerializer
+
 User = get_user_model()
 
 
@@ -20,6 +22,32 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
         token = super().get_token(user)
         token['email'] = user.email
         return token
+
+
+class SignupView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        serializer = SignupSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        workspace = user._signup_workspace
+        refresh = RefreshToken.for_user(user)
+        return success_envelope(
+            {
+                'access': str(refresh.access_token),
+                'refresh': str(refresh),
+                'user': UserSerializer(user).data,
+                'workspace': {
+                    'id': str(workspace.id),
+                    'name': workspace.name,
+                    'slug': workspace.slug,
+                    'role': WorkspaceMembership.ROLE_ADMIN,
+                },
+            },
+            'Signup successful',
+            status.HTTP_201_CREATED,
+        )
 
 
 class EmailTokenObtainPairView(TokenObtainPairView):

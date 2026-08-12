@@ -23,13 +23,29 @@ Swagger: `http://127.0.0.1:8000/api/docs/`
 | `CELERY_TASK_ALWAYS_EAGER` | `True` | Set `False` when Redis/Celery worker running |
 | `AI_PROVIDER_MODE` | `stub` | Stub OCR/AI until real services connected |
 
+## Auth
+
+```
+POST /api/auth/signup/
+{
+  "email": "naveen@example.com",
+  "password": "YourPassword123!",
+  "first_name": "Naveen",
+  "last_name": "Kumar",
+  "phone": "+91-9000000000",
+  "workspace_name": "Pezala"
+}
+```
+
+No role field. Signup creates a workspace and adds the user as `admin`.
+
 ## Workspace header
 
 All workspace-scoped endpoints require:
 
 ```
 Authorization: Bearer <access_token>
-X-Workspace-Id: <workspace_uuid>
+X-Workspace-Id: <workspace_id>
 ```
 
 ## Smoke test

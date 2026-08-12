@@ -4,11 +4,13 @@ from .views import (
     EmailTokenObtainPairView,
     MeView,
     PasswordResetView,
+    SignupView,
     TokenBlacklistView,
     TokenRefreshEnvelopeView,
 )
 
 urlpatterns = [
+    path('signup/', SignupView.as_view(), name='auth_signup'),
     path('token/', EmailTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('token/refresh/', TokenRefreshEnvelopeView.as_view(), name='token_refresh'),
     path('token/blacklist/', TokenBlacklistView.as_view(), name='token_blacklist'),
