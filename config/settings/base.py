@@ -3,6 +3,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import environ
+from corsheaders.defaults import default_headers
 
 env = environ.Env(
     DJANGO_DEBUG=(bool, True),
@@ -131,6 +132,9 @@ CORS_ALLOWED_ORIGINS = env.list(
     default=['http://localhost:5173', 'http://127.0.0.1:5173'],
 )
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    'x-workspace-id',
+]
 
 CELERY_BROKER_URL = env('CELERY_BROKER_URL', default='redis://localhost:6379/0')
 CELERY_RESULT_BACKEND = env('CELERY_RESULT_BACKEND', default='redis://localhost:6379/1')
