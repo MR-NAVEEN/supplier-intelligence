@@ -30,7 +30,7 @@ def _require_fitz():
         raise RuntimeError(_PYMUPDF_INSTALL_HINT)
 
 MODEL_TIERS = {
-    'budget': os.environ.get('AI_MODEL_BUDGET', 'gpt-5.6-luna'),
+    'budget': os.environ.get('AI_MODEL_BUDGET', 'gpt-5.6-sol'),
     'balanced': os.environ.get('AI_MODEL_BALANCED', 'gpt-5.4-mini'),
     'high_accuracy': os.environ.get('AI_MODEL_HIGH_ACCURACY', 'gpt-5.4'),
 }
@@ -149,9 +149,10 @@ def extract_page(client, model_name, image_path, page_num, width, height, retrie
         f"If a price is printed like 'MRP:-5990', store price as '5990' (no leading dash)."
     )
     last_error = None
+    use_temperature = True
     for attempt in range(retries):
         try:
-            resp = client.chat.completions.create(
+            kwargs = dict(
                 model=model_name,
                 response_format={'type': 'json_object'},
                 messages=[
@@ -164,8 +165,10 @@ def extract_page(client, model_name, image_path, page_num, width, height, retrie
                         ],
                     },
                 ],
-                temperature=0,
             )
+            if use_temperature:
+                kwargs['temperature'] = 0
+            resp = client.chat.completions.create(**kwargs)
             content = resp.choices[0].message.content or '{}'
             data = sanitize_page_data(json.loads(content))
             return data, _usage_from_response(resp)
@@ -182,6 +185,10 @@ def extract_page(client, model_name, image_path, page_num, width, height, retrie
                 )
             ):
                 raise
+            if use_temperature and 'temperature' in msg and 'unsupported' in msg:
+                # Some model tiers (e.g. gpt-5.6-*) only allow the default temperature.
+                use_temperature = False
+                continue
             time.sleep(2 * (attempt + 1))
     return (
         {
