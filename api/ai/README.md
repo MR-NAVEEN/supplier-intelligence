@@ -10,16 +10,22 @@ All extraction logic lives in this app. Other backend apps are not modified for 
 
 AI endpoints are open for demo/testing (no login / no `X-Workspace-Id`).
 
-### Catalogue PDF extraction
+### Catalogue PDF + photo extraction
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `POST` | `/api/ai/extract/` | Upload PDF, extract products JSON, save run + schema |
+| `POST` | `/api/ai/extract/` | Upload PDF or photos, extract products JSON, save |
 | `GET` | `/api/ai/extract/` | List extract runs |
 | `GET` | `/api/ai/extract/{id}/` | Run detail |
 | `GET` | `/api/ai/catalogues/` | List catalogues |
 | `GET` | `/api/ai/catalogues/{id}/` | Catalogue + pages + products |
 | `GET` | `/api/ai/catalogues/{id}/products/` | Products only (`?sku=` `&page_number=`) |
+
+### Bulk spreadsheet import
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/api/ai/bulk-upload/` | CSV / Excel → same catalogue product tables |
 
 ### Business card OCR
 
@@ -41,12 +47,25 @@ AI endpoints are open for demo/testing (no login / no `X-Workspace-Id`).
 
 | Field | Required | Notes |
 |--------|----------|--------|
-| `file` | yes | PDF only, max 50 MB |
-| `page_mode` | yes | `full` / `first_n` / `range` |
+| `file` | yes | PDF **or** photos (jpg/png/webp/gif/tiff). Repeat `file` for multiple photos. Max 50 MB each |
+| `page_mode` | PDF yes; photos no | `full` / `first_n` / `range` (photos default `full`) |
 | `page_count` | if `first_n` | e.g. `5` |
 | `page_range` | if `range` | e.g. `16-20` or `1,3,5-7` |
 | `model_tier` | no | `high_accuracy` (default), `balanced`, `budget` |
-| `dpi` | no | default `200` |
+| `dpi` | no | PDF render dpi, default `200` |
+
+Excel/CSV is **not** accepted here. Use `POST /api/ai/bulk-upload/`.
+
+### `POST /api/ai/bulk-upload/` (short)
+
+`multipart/form-data`
+
+| Field | Required | Notes |
+|--------|----------|--------|
+| `file` | yes | `.xlsx` / `.xlsm` / `.csv` / `.tsv` |
+| `sheet` | no | Sheet name or index (Excel) |
+| `header_row` | no | 1-based header row if auto-detect is wrong |
+| `column_map` | no | JSON `{"product_name":"Item Name","price":"MRP"}` |
 
 ### `POST /api/ai/cards/` (short)
 

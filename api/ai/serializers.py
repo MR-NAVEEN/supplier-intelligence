@@ -8,13 +8,20 @@ from .models import (
     AIExtractedProduct,
     AIExtractionRun,
 )
-
-MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+from .services.files import (
+    MAX_UPLOAD_BYTES,
+    classify_upload,
+    upload_too_large,
+)
 
 
 class AIExtractRequestSerializer(serializers.Serializer):
-    file = serializers.FileField()
-    page_mode = serializers.ChoiceField(choices=AIExtractionRun.PAGE_MODE_CHOICES)
+    files = serializers.ListField(child=serializers.FileField(), allow_empty=False)
+    page_mode = serializers.ChoiceField(
+        choices=AIExtractionRun.PAGE_MODE_CHOICES,
+        required=False,
+        allow_null=True,
+    )
     page_count = serializers.IntegerField(required=False, allow_null=True, min_value=1)
     page_range = serializers.CharField(required=False, allow_blank=True, max_length=128)
     model_tier = serializers.ChoiceField(
@@ -24,23 +31,60 @@ class AIExtractRequestSerializer(serializers.Serializer):
     )
     dpi = serializers.IntegerField(required=False, default=200, min_value=72, max_value=300)
 
-    def validate_file(self, value):
-        name = (getattr(value, 'name', '') or '').lower()
-        content_type = (getattr(value, 'content_type', '') or '').lower()
-        if not name.endswith('.pdf') and content_type not in ('application/pdf', 'application/x-pdf'):
-            raise serializers.ValidationError('Only PDF files are accepted.')
-        size = getattr(value, 'size', 0) or 0
-        if size > MAX_UPLOAD_BYTES:
-            raise serializers.ValidationError('PDF is larger than 50 MB.')
+    def validate_files(self, value):
+        kinds = []
+        for item in value:
+            if upload_too_large(item):
+                raise serializers.ValidationError('Each file must be 50 MB or smaller.')
+            kind = classify_upload(item)
+            if kind in {'spreadsheet', 'xls'}:
+                raise serializers.ValidationError(
+                    'Excel/CSV files must be sent to POST /api/ai/bulk-upload/, not /api/ai/extract/.'
+                )
+            if kind == 'unknown':
+                raise serializers.ValidationError(
+                    f'{item.name}: upload a PDF or photo (jpg, png, webp, gif, tiff).'
+                )
+            kinds.append(kind)
+        unique = set(kinds)
+        if 'pdf' in unique and 'image' in unique:
+            raise serializers.ValidationError('Send either one PDF or photo files, not both in the same request.')
+        if kinds.count('pdf') > 1:
+            raise serializers.ValidationError('Upload one PDF per request.')
         return value
 
     def validate(self, attrs):
+        files = attrs.get('files') or []
+        kinds = {classify_upload(item) for item in files}
         mode = attrs.get('page_mode')
+        if 'pdf' in kinds and not mode:
+            raise serializers.ValidationError({'page_mode': 'Required for PDF uploads (full, first_n, or range).'})
+        if not mode:
+            attrs['page_mode'] = AIExtractionRun.MODE_FULL
+            mode = attrs['page_mode']
         if mode == AIExtractionRun.MODE_FIRST_N and not attrs.get('page_count'):
             raise serializers.ValidationError({'page_count': 'Required when page_mode is first_n.'})
         if mode == AIExtractionRun.MODE_RANGE and not (attrs.get('page_range') or '').strip():
             raise serializers.ValidationError({'page_range': 'Required when page_mode is range.'})
         return attrs
+
+
+class AIBulkUploadRequestSerializer(serializers.Serializer):
+    file = serializers.FileField()
+    sheet = serializers.CharField(required=False, allow_blank=True, max_length=128)
+    header_row = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    column_map = serializers.CharField(required=False, allow_blank=True)
+    max_rows = serializers.IntegerField(required=False, allow_null=True, min_value=1, max_value=20000)
+
+    def validate_file(self, value):
+        if upload_too_large(value):
+            raise serializers.ValidationError('File is larger than 50 MB.')
+        kind = classify_upload(value)
+        if kind == 'xls':
+            raise serializers.ValidationError('Legacy .xls is not supported. Save as .xlsx or CSV.')
+        if kind != 'spreadsheet':
+            raise serializers.ValidationError('Upload a .xlsx, .xlsm, .csv, or .tsv file.')
+        return value
 
 
 class AICatalogueUploadSerializer(serializers.ModelSerializer):

@@ -23,6 +23,7 @@ from .models import (
 )
 from .workspace import get_default_workspace, optional_user
 from .serializers import (
+    AIBulkUploadRequestSerializer,
     AIBusinessCardListSerializer,
     AIBusinessCardSerializer,
     AICardExtractRequestSerializer,
@@ -37,9 +38,74 @@ from .serializers import (
 from .services.card_extract import extract_business_card
 from .services.chat import answer_question
 from .services.costing import estimate_cost
-from .services.extraction import MODEL_TIERS, extract_catalogue, pdf_page_count
+from .services.excel_import import import_spreadsheet, parse_user_column_map
+from .services.extraction import MODEL_TIERS, extract_catalogue, extract_catalogue_from_images, pdf_page_count
+from .services.files import classify_upload
 from .services.page_selection import resolve_pages
 from .services.persist import persist_run_to_schema
+
+
+def collect_uploads(request, keys=('file', 'files', 'files[]')):
+    uploads = []
+    seen = set()
+    for key in keys:
+        for item in request.FILES.getlist(key):
+            marker = id(item)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            uploads.append(item)
+    return uploads
+
+
+def _fail_run(run, exc):
+    run.status = AIExtractionRun.STATUS_FAILED
+    run.finished_at = timezone.now()
+    if run.started_at:
+        run.duration_ms = int((run.finished_at - run.started_at).total_seconds() * 1000)
+    run.error_message = str(exc)
+    run.save(
+        update_fields=['status', 'finished_at', 'duration_ms', 'error_message', 'updated_at']
+    )
+    message = str(exc)
+    status_code = 502
+    lowered = message.lower()
+    if 'openai_api_key' in lowered:
+        status_code = 500
+    if any(token in lowered for token in ('insufficient_quota', 'credit_balance_exhausted')):
+        status_code = 402
+    if isinstance(exc, ValueError):
+        status_code = 400
+    return error_envelope(message, status_code, data=AIExtractionRunSerializer(run).data)
+
+
+def _succeed_run(run, extracted, pages_billed):
+    finished = timezone.now()
+    duration_ms = int((finished - run.started_at).total_seconds() * 1000)
+    result = extracted['result']
+    usage = extracted['usage']
+    costing = estimate_cost(run.model_name, usage['prompt_tokens'], usage['completion_tokens'])
+    pages_kept = len(result.get('pages') or [])
+    products_count = sum(len(page.get('products') or []) for page in (result.get('pages') or []))
+    costing['breakdown']['pages_billed'] = pages_billed
+    if pages_billed and costing['estimated_cost_usd']:
+        avg = (costing['estimated_cost_usd'] / Decimal(pages_billed)).quantize(Decimal('0.000001'))
+        costing['breakdown']['avg_cost_per_page_usd'] = str(avg)
+    run.status = AIExtractionRun.STATUS_SUCCEEDED
+    run.result_json = result
+    run.pages_kept = pages_kept
+    run.products_count = products_count
+    run.advertisement_pages_skipped = extracted.get('advertisement_pages_skipped') or 0
+    run.finished_at = finished
+    run.duration_ms = duration_ms
+    run.prompt_tokens = usage['prompt_tokens']
+    run.completion_tokens = usage['completion_tokens']
+    run.total_tokens = usage['total_tokens']
+    run.estimated_cost_usd = costing['estimated_cost_usd']
+    run.cost_breakdown = costing['breakdown']
+    run.save()
+    persist_run_to_schema(run, result)
+    return success_envelope(AIExtractionRunSerializer(run).data, 'Extraction completed', 201)
 
 
 class AIOpenViewSetMixin:
@@ -74,42 +140,63 @@ class AIExtractionRunViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
         return AIExtractionRunSerializer
 
     def create(self, request, *args, **kwargs):
-        serializer = AIExtractRequestSerializer(data=request.data)
+        uploads = collect_uploads(request)
+        if not uploads:
+            return error_envelope('Upload a PDF or catalogue photos (jpg, png, webp).', 400)
+        serializer = AIExtractRequestSerializer(
+            data={
+                'files': uploads,
+                'page_mode': request.data.get('page_mode') or None,
+                'page_count': request.data.get('page_count') or None,
+                'page_range': request.data.get('page_range') or '',
+                'model_tier': request.data.get('model_tier') or AIExtractionRun.TIER_HIGH,
+                'dpi': request.data.get('dpi') or 200,
+            }
+        )
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        uploaded = data['file']
+        uploads = data['files']
+        kind = classify_upload(uploads[0])
 
         max_pages = int(os.environ.get('AI_MAX_PAGES_PER_REQUEST', '30'))
         model_tier = data.get('model_tier') or AIExtractionRun.TIER_HIGH
         model_name = MODEL_TIERS.get(model_tier, MODEL_TIERS['high_accuracy'])
         dpi = data.get('dpi') or 200
-
         workspace = get_default_workspace()
         user = optional_user(request)
+        first = uploads[0]
         upload = AICatalogueUpload.objects.create(
             workspace=workspace,
-            file=uploaded,
-            original_filename=uploaded.name,
-            file_size_bytes=getattr(uploaded, 'size', 0) or 0,
-            content_type=getattr(uploaded, 'content_type', '') or 'application/pdf',
+            file=first,
+            original_filename=', '.join(item.name for item in uploads),
+            file_size_bytes=sum(getattr(item, 'size', 0) or 0 for item in uploads),
+            content_type=getattr(first, 'content_type', '') or '',
             uploaded_by=user,
         )
-        try:
-            total_pages = pdf_page_count(upload.file.path)
-        except Exception as exc:  # noqa: BLE001
-            upload.delete()
-            return error_envelope(f'Could not read PDF: {exc}', 400)
+
+        if kind == 'pdf':
+            try:
+                total_pages = pdf_page_count(upload.file.path)
+            except Exception as exc:  # noqa: BLE001
+                upload.delete()
+                return error_envelope(f'Could not read PDF: {exc}', 400)
+        else:
+            total_pages = len(uploads)
 
         upload.total_pages = total_pages
         upload.save(update_fields=['total_pages', 'updated_at'])
 
-        pages = resolve_pages(
-            page_mode=data['page_mode'],
-            total_pages=total_pages,
-            page_count=data.get('page_count'),
-            page_range=data.get('page_range'),
-            max_pages=max_pages,
-        )
+        try:
+            pages = resolve_pages(
+                page_mode=data['page_mode'],
+                total_pages=total_pages,
+                page_count=data.get('page_count'),
+                page_range=data.get('page_range'),
+                max_pages=max_pages,
+            )
+        except Exception as exc:  # noqa: BLE001
+            upload.delete()
+            raise exc
 
         run = AIExtractionRun.objects.create(
             workspace=workspace,
@@ -127,59 +214,20 @@ class AIExtractionRunViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
         )
 
         try:
-            extracted = extract_catalogue(upload.file.path, pages, model_name, dpi=dpi)
-            finished = timezone.now()
-            duration_ms = int((finished - run.started_at).total_seconds() * 1000)
-            result = extracted['result']
-            usage = extracted['usage']
-            costing = estimate_cost(model_name, usage['prompt_tokens'], usage['completion_tokens'])
-            pages_kept = len(result.get('pages') or [])
-            products_count = sum(len(page.get('products') or []) for page in (result.get('pages') or []))
-            pages_billed = len(pages)
-            costing['breakdown']['pages_billed'] = pages_billed
-            if pages_billed:
-                avg = (costing['estimated_cost_usd'] / Decimal(pages_billed)).quantize(Decimal('0.000001'))
-                costing['breakdown']['avg_cost_per_page_usd'] = str(avg)
-
-            run.status = AIExtractionRun.STATUS_SUCCEEDED
-            run.result_json = result
-            run.pages_kept = pages_kept
-            run.products_count = products_count
-            run.advertisement_pages_skipped = extracted['advertisement_pages_skipped']
-            run.finished_at = finished
-            run.duration_ms = duration_ms
-            run.prompt_tokens = usage['prompt_tokens']
-            run.completion_tokens = usage['completion_tokens']
-            run.total_tokens = usage['total_tokens']
-            run.estimated_cost_usd = costing['estimated_cost_usd']
-            run.cost_breakdown = costing['breakdown']
-            run.save()
-            persist_run_to_schema(run, result)
+            if kind == 'pdf':
+                extracted = extract_catalogue(upload.file.path, pages, model_name, dpi=dpi)
+            else:
+                image_paths = [upload.file.path]
+                for index, extra in enumerate(uploads[1:], start=2):
+                    stored = default_storage.save(
+                        f'ai/catalogues/{workspace.id}/page{index}_{extra.name}',
+                        extra,
+                    )
+                    image_paths.append(default_storage.path(stored))
+                extracted = extract_catalogue_from_images(image_paths, pages, model_name)
+            return _succeed_run(run, extracted, len(pages))
         except Exception as exc:  # noqa: BLE001
-            run.status = AIExtractionRun.STATUS_FAILED
-            run.finished_at = timezone.now()
-            if run.started_at:
-                run.duration_ms = int((run.finished_at - run.started_at).total_seconds() * 1000)
-            run.error_message = str(exc)
-            run.save(
-                update_fields=[
-                    'status',
-                    'finished_at',
-                    'duration_ms',
-                    'error_message',
-                    'updated_at',
-                ]
-            )
-            message = str(exc)
-            status_code = 502
-            lowered = message.lower()
-            if 'openai_api_key' in lowered:
-                status_code = 500
-            if any(token in lowered for token in ('insufficient_quota', 'credit_balance_exhausted')):
-                status_code = 402
-            return error_envelope(message, status_code, data=AIExtractionRunSerializer(run).data)
-
-        return success_envelope(AIExtractionRunSerializer(run).data, 'Extraction completed', 201)
+            return _fail_run(run, exc)
 
 
 class AICatalogueViewSet(AIOpenViewSetMixin, viewsets.ReadOnlyModelViewSet):
@@ -392,3 +440,70 @@ class AIChatView(APIView):
             },
             'Answered',
         )
+
+
+class AIBulkUploadView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, *args, **kwargs):
+        uploads = collect_uploads(request)
+        if not uploads:
+            return error_envelope('Upload one .xlsx, .xlsm, .csv, or .tsv file.', 400)
+        if len(uploads) > 1:
+            return error_envelope('Upload one spreadsheet per request.', 400)
+        serializer = AIBulkUploadRequestSerializer(
+            data={
+                'file': uploads[0],
+                'sheet': request.data.get('sheet') or '',
+                'header_row': request.data.get('header_row') or None,
+                'column_map': request.data.get('column_map') or '',
+                'max_rows': request.data.get('max_rows') or None,
+            }
+        )
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        uploaded = data['file']
+        try:
+            column_map = parse_user_column_map(data.get('column_map'))
+        except ValueError as exc:
+            return error_envelope(str(exc), 400)
+
+        workspace = get_default_workspace()
+        user = optional_user(request)
+        max_rows = data.get('max_rows') or int(os.environ.get('AI_MAX_EXCEL_ROWS', '5000'))
+        upload = AICatalogueUpload.objects.create(
+            workspace=workspace,
+            file=uploaded,
+            original_filename=uploaded.name,
+            file_size_bytes=getattr(uploaded, 'size', 0) or 0,
+            content_type=getattr(uploaded, 'content_type', '') or '',
+            uploaded_by=user,
+        )
+        run = AIExtractionRun.objects.create(
+            workspace=workspace,
+            upload=upload,
+            status=AIExtractionRun.STATUS_RUNNING,
+            page_mode=AIExtractionRun.MODE_FULL,
+            pages_requested=[],
+            model_tier=AIExtractionRun.TIER_BUDGET,
+            model_name='spreadsheet-import',
+            started_at=timezone.now(),
+            created_by=user,
+        )
+        try:
+            extracted = import_spreadsheet(
+                upload.file.path,
+                sheet=data.get('sheet') or None,
+                column_map=column_map,
+                header_row=data.get('header_row'),
+                max_rows=max_rows,
+            )
+            pages = extracted['result'].get('pages_processed') or [1]
+            run.pages_requested = pages
+            upload.total_pages = extracted['result'].get('total_pages_in_pdf') or 1
+            upload.save(update_fields=['total_pages', 'updated_at'])
+            return _succeed_run(run, extracted, 0)
+        except Exception as exc:  # noqa: BLE001
+            return _fail_run(run, exc)

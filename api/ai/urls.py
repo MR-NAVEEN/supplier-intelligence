@@ -2,6 +2,7 @@ from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    AIBulkUploadView,
     AIBusinessCardViewSet,
     AICatalogueProductViewSet,
     AICatalogueViewSet,
@@ -21,4 +22,5 @@ urlpatterns = router.urls + [
         name='ai-catalogue-products',
     ),
     path('chat/', AIChatView.as_view(), name='ai-chat'),
+    path('bulk-upload/', AIBulkUploadView.as_view(), name='ai-bulk-upload'),
 ]

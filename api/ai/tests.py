@@ -105,6 +105,41 @@ class AIExtractAPITest(TestCase):
         self.assertEqual(products.status_code, 200)
         self.assertEqual(products.json()['data']['results'][0]['product_name'], 'WAVE BUDS 2')
 
+    @patch('api.ai.views.extract_catalogue_from_images')
+    def test_accepts_catalogue_photo(self, extract_mock):
+        extract_mock.return_value = {
+            'result': {
+                'source_file': 'page.png',
+                'source_type': 'images',
+                'total_pages_in_pdf': 1,
+                'pages_processed': [1],
+                'pages': [
+                    {
+                        'page_number': 1,
+                        'page_type': 'product_listing',
+                        'products': [{'product_name': 'SOUNDKING-5W', 'price': '1499', 'code_or_sku': None}],
+                    }
+                ],
+            },
+            'usage': {'prompt_tokens': 800, 'completion_tokens': 100, 'total_tokens': 900},
+            'advertisement_pages_skipped': 0,
+        }
+        resp = self.client.post(
+            '/api/ai/extract/',
+            {'file': SimpleUploadedFile('page.png', _tiny_png_bytes(), content_type='image/png')},
+            format='multipart',
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertEqual(resp.json()['data']['result']['pages'][0]['products'][0]['product_name'], 'SOUNDKING-5W')
+
+    def test_sends_excel_to_bulk_endpoint_message(self):
+        resp = self.client.post(
+            '/api/ai/extract/',
+            {'file': SimpleUploadedFile('list.csv', b'a,b\n1,2\n', content_type='text/csv')},
+            format='multipart',
+        )
+        self.assertEqual(resp.status_code, 400)
+
 
 def _tiny_png_bytes():
     return (
@@ -403,3 +438,85 @@ class AIChatAPITest(TestCase):
         self.assertEqual(second.status_code, 200, second.content)
         self.assertIn('MAGPOWER-P10', second.json()['data']['answer'])
         self.assertIn('3445', second.json()['data']['answer'])
+
+
+def _xlsx_bytes():
+    from io import BytesIO
+
+    from openpyxl import Workbook
+
+    book = Workbook()
+    sheet = book.active
+    sheet.append(['Title row ignore', '', ''])
+    sheet.append(['Item Name', 'SKU', 'MRP', 'Brand'])
+    sheet.append(['WAVE BUDS 2', 'WB2', '6999', 'JBL'])
+    sheet.append(['HOLD-ME-UP3', 'HM3', '499', 'FINGER'])
+    sheet.append(['', '', '', ''])
+    buf = BytesIO()
+    book.save(buf)
+    return buf.getvalue()
+
+
+class AIExcelImportUnitTest(TestCase):
+    def test_maps_common_headers(self):
+        from api.ai.services.excel_import import rows_to_products
+
+        parsed = rows_to_products(
+            [
+                ['Item Name', 'SKU', 'MRP'],
+                ['SOUNDKING-5W', 'SK5', '1499'],
+                ['', '', ''],
+            ]
+        )
+        self.assertEqual(parsed['products'][0]['product_name'], 'SOUNDKING-5W')
+        self.assertEqual(parsed['products'][0]['price'], '1499')
+        self.assertEqual(parsed['column_map']['price'], 'MRP')
+
+
+class AIBulkUploadAPITest(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_rejects_pdf(self):
+        resp = self.client.post(
+            '/api/ai/bulk-upload/',
+            {'file': SimpleUploadedFile('cat.pdf', _tiny_pdf_bytes(), content_type='application/pdf')},
+            format='multipart',
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_imports_csv(self):
+        csv_bytes = b'Item Name,SKU,MRP\nWAVE BUDS 2,WB2,6999\nHOLD-ME-UP3,HM3,499\n'
+        resp = self.client.post(
+            '/api/ai/bulk-upload/',
+            {'file': SimpleUploadedFile('products.csv', csv_bytes, content_type='text/csv')},
+            format='multipart',
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        data = resp.json()['data']
+        self.assertEqual(data['status'], 'succeeded')
+        self.assertEqual(data['summary']['products_count'], 2)
+        self.assertEqual(data['result']['column_map']['product_name'], 'Item Name')
+        catalogues = self.client.get('/api/ai/catalogues/')
+        cat_id = catalogues.json()['data']['results'][0]['id']
+        products = self.client.get(f'/api/ai/catalogues/{cat_id}/products/')
+        names = [row['product_name'] for row in products.json()['data']['results']]
+        self.assertIn('WAVE BUDS 2', names)
+        self.assertIn('HOLD-ME-UP3', names)
+
+    def test_imports_xlsx(self):
+        resp = self.client.post(
+            '/api/ai/bulk-upload/',
+            {
+                'file': SimpleUploadedFile(
+                    'products.xlsx',
+                    _xlsx_bytes(),
+                    content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                )
+            },
+            format='multipart',
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        data = resp.json()['data']
+        self.assertEqual(data['summary']['products_count'], 2)
+        self.assertEqual(data['result']['header_row'], 2)

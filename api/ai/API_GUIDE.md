@@ -10,30 +10,36 @@ Import the Postman collection: [`AI_OCR.postman_collection.json`](./AI_OCR.postm
 
 ## All endpoints (complete list)
 
-### A) Catalogue PDF extraction
+### A) Catalogue PDF + photo extraction
 
 | # | Method | Endpoint | What it does |
 |---|--------|----------|--------------|
-| 1 | `POST` | `/api/ai/extract/` | Upload PDF → OCR products → save run + schema |
+| 1 | `POST` | `/api/ai/extract/` | Upload PDF **or photos** → OCR products → save run + schema |
 | 2 | `GET` | `/api/ai/extract/` | List extract runs |
 | 3 | `GET` | `/api/ai/extract/{id}/` | One extract run detail |
 | 4 | `GET` | `/api/ai/catalogues/` | List saved catalogues |
 | 5 | `GET` | `/api/ai/catalogues/{id}/` | Catalogue + pages + products |
 | 6 | `GET` | `/api/ai/catalogues/{id}/products/` | Products only (`?page_number=` `&sku=`) |
 
-### B) Business card OCR
+### B) Bulk spreadsheet import
 
 | # | Method | Endpoint | What it does |
 |---|--------|----------|--------------|
-| 7 | `POST` | `/api/ai/cards/` | Upload card image → OCR contacts → save |
-| 8 | `GET` | `/api/ai/cards/` | List cards (`?company=` `&name=` `&q=`) |
-| 9 | `GET` | `/api/ai/cards/{id}/` | One card detail + `result_json` |
+| 7 | `POST` | `/api/ai/bulk-upload/` | CSV / Excel rows → same catalogue product tables |
 
-### C) Catalogue chat
+### C) Business card OCR
 
 | # | Method | Endpoint | What it does |
 |---|--------|----------|--------------|
-| 10 | `POST` | `/api/ai/chat/` | Ask questions on extracted catalogue rows |
+| 8 | `POST` | `/api/ai/cards/` | Upload card image → OCR contacts → save |
+| 9 | `GET` | `/api/ai/cards/` | List cards (`?company=` `&name=` `&q=`) |
+| 10 | `GET` | `/api/ai/cards/{id}/` | One card detail + `result_json` |
+
+### D) Catalogue chat
+
+| # | Method | Endpoint | What it does |
+|---|--------|----------|--------------|
+| 11 | `POST` | `/api/ai/chat/` | Ask questions on extracted catalogue rows |
 
 ---
 
@@ -374,6 +380,40 @@ Optional query params:
   }
 }
 ```
+
+---
+
+## 1b. Bulk CSV / Excel import
+
+### `POST /api/ai/bulk-upload/`
+
+Reads spreadsheet rows (no OCR) and saves into the **same** catalogue/product tables.
+
+**Formats:** `.xlsx`, `.xlsm`, `.csv`, `.tsv`  
+**Not supported:** `.xls` (save as xlsx/csv)
+
+#### Payload (`multipart/form-data`)
+
+| Field | Required | Example | Notes |
+|--------|----------|---------|--------|
+| `file` | yes | `products.xlsx` | One file |
+| `sheet` | no | `Sheet1` or `0` | Excel sheet |
+| `header_row` | no | `2` | 1-based if auto-detect is wrong |
+| `column_map` | no | `{"product_name":"Item Name","price":"MRP"}` | JSON string |
+| `max_rows` | no | `5000` | Cap |
+
+Auto-maps headers like Item Name, SKU, MRP, Rate, Model No.
+
+#### Sample request
+
+```
+POST /api/ai/bulk-upload/
+file = products.csv
+```
+
+#### Sample success (`201`)
+
+Same envelope as extract: `status=succeeded`, `summary.products_count`, `result.column_map`, `result.pages`.
 
 ---
 

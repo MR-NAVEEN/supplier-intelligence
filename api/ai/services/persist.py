@@ -86,13 +86,13 @@ def persist_run_to_schema(run, result):
             page_notes=page_data.get('page_notes') or '',
             is_current=True,
         )
-        series = page_data.get('series_or_section_title') or ''
         for prod in page_data.get('products') or []:
             name = (prod.get('product_name') or '').strip()
             sku = (prod.get('code_or_sku') or '').strip()
             price_raw = '' if prod.get('price') is None else str(prod.get('price')).strip()
             attrs = prod.get('attributes') if isinstance(prod.get('attributes'), dict) else {}
             description = prod.get('description') or ''
+            series = (prod.get('series') or page_data.get('series_or_section_title') or '')
             AIExtractedProduct.objects.create(
                 catalogue=catalogue,
                 run=run,
