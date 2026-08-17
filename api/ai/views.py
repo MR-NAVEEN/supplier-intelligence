@@ -1,16 +1,26 @@
 import os
 from decimal import Decimal
 
+from django.core.files.storage import default_storage
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import viewsets
-from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny
+from rest_framework.views import APIView
 
 from api.common.pagination import StandardPagination
 from api.common.responses import error_envelope, success_envelope
 
-from .models import AIBusinessCard, AICatalogue, AICatalogueUpload, AIExtractedProduct, AIExtractionRun
+from .models import (
+    AIBusinessCard,
+    AICatalogue,
+    AICatalogueUpload,
+    AIChatSession,
+    AIChatTurn,
+    AIExtractedProduct,
+    AIExtractionRun,
+)
 from .workspace import get_default_workspace, optional_user
 from .serializers import (
     AIBusinessCardListSerializer,
@@ -18,12 +28,14 @@ from .serializers import (
     AICardExtractRequestSerializer,
     AICatalogueListSerializer,
     AICatalogueSchemaSerializer,
+    AIChatRequestSerializer,
     AIExtractedProductSerializer,
     AIExtractRequestSerializer,
     AIExtractionRunListSerializer,
     AIExtractionRunSerializer,
 )
 from .services.card_extract import extract_business_card
+from .services.chat import answer_question
 from .services.costing import estimate_cost
 from .services.extraction import MODEL_TIERS, extract_catalogue, pdf_page_count
 from .services.page_selection import resolve_pages
@@ -230,30 +242,67 @@ class AIBusinessCardViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
             )
         return qs
 
+    def _collect_uploads(self, request):
+        uploads = []
+        seen = set()
+        for key in ('file', 'files', 'files[]'):
+            for item in request.FILES.getlist(key):
+                marker = id(item)
+                if marker in seen:
+                    continue
+                seen.add(marker)
+                uploads.append(item)
+        return uploads
+
     def create(self, request, *args, **kwargs):
-        serializer = AICardExtractRequestSerializer(data=request.data)
+        uploads = self._collect_uploads(request)
+        if not uploads:
+            return error_envelope('Upload at least one card file (jpg, png, webp, pdf). Repeat key "file" for front and back.', 400)
+        serializer = AICardExtractRequestSerializer(
+            data={
+                'files': uploads,
+                'model_tier': request.data.get('model_tier') or AIExtractionRun.TIER_HIGH,
+            }
+        )
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        uploaded = data['file']
+        uploads = data['files']
         model_tier = data.get('model_tier') or AIExtractionRun.TIER_HIGH
         model_name = MODEL_TIERS.get(model_tier, MODEL_TIERS['high_accuracy'])
         workspace = get_default_workspace()
         user = optional_user(request)
+        first = uploads[0]
+        source_files = [
+            {
+                'filename': item.name,
+                'content_type': getattr(item, 'content_type', '') or '',
+                'size_bytes': getattr(item, 'size', 0) or 0,
+            }
+            for item in uploads
+        ]
 
         card = AIBusinessCard.objects.create(
             workspace=workspace,
-            image=uploaded,
-            original_filename=uploaded.name,
-            content_type=getattr(uploaded, 'content_type', '') or '',
-            file_size_bytes=getattr(uploaded, 'size', 0) or 0,
+            image=first,
+            original_filename=', '.join(item.name for item in uploads),
+            content_type=getattr(first, 'content_type', '') or '',
+            file_size_bytes=sum(getattr(item, 'size', 0) or 0 for item in uploads),
+            source_files=source_files,
             status=AIBusinessCard.STATUS_PENDING,
             model_tier=model_tier,
             model_name=model_name,
             started_at=timezone.now(),
             created_by=user,
         )
+        saved_paths = [card.image.path]
         try:
-            extracted = extract_business_card(card.image.path, model_name)
+            for index, uploaded in enumerate(uploads[1:], start=2):
+                stored_name = default_storage.save(
+                    f'ai/cards/{workspace.id}/side{index}_{uploaded.name}',
+                    uploaded,
+                )
+                saved_paths.append(default_storage.path(stored_name))
+            extracted = extract_business_card(saved_paths, model_name)
             finished = timezone.now()
             result = extracted['result']
             usage = extracted['usage']
@@ -267,6 +316,7 @@ class AIBusinessCardViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
             card.website = result.get('website') or ''
             card.address = result.get('address') or ''
             card.linkedin = result.get('linkedin') or ''
+            card.brands = result.get('brands') or []
             card.extras = result.get('extras') or {}
             card.extra_text = result.get('extra_text') or ''
             card.result_json = result
@@ -294,3 +344,51 @@ class AIBusinessCardViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
             return error_envelope(str(exc), status_code, data=AIBusinessCardSerializer(card).data)
 
         return success_envelope(AIBusinessCardSerializer(card).data, 'Card extracted', 201)
+
+
+class AIChatView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    parser_classes = [JSONParser, FormParser]
+
+    def post(self, request, *args, **kwargs):
+        serializer = AIChatRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        message = data['message'].strip()
+        if not message:
+            return error_envelope('message is required', 400)
+
+        workspace = get_default_workspace()
+        session = None
+        session_id = data.get('session_id')
+        if session_id:
+            session = AIChatSession.objects.filter(pk=session_id, workspace=workspace).first()
+            if session is None:
+                return error_envelope('Unknown session_id', 404)
+        else:
+            session = AIChatSession.objects.create(workspace=workspace)
+
+        result = answer_question(
+            message,
+            catalogue_id=data.get('catalogue_id'),
+            last_context=session.last_context or {},
+        )
+        session.last_context = result['context']
+        session.save(update_fields=['last_context', 'updated_at'])
+        AIChatTurn.objects.create(
+            session=session,
+            question=message,
+            answer=result['answer'],
+            intent=result['intent'],
+            sources=result['sources'],
+        )
+        return success_envelope(
+            {
+                'session_id': session.id,
+                'answer': result['answer'],
+                'intent': result['intent'],
+                'sources': result['sources'],
+            },
+            'Answered',
+        )

@@ -212,8 +212,10 @@ class AIBusinessCard(WorkspaceScopedModel):
     website = models.CharField(max_length=255, blank=True)
     address = models.TextField(blank=True)
     linkedin = models.CharField(max_length=255, blank=True)
+    brands = models.JSONField(default=list, blank=True)
     extras = models.JSONField(default=dict, blank=True)
     extra_text = models.TextField(blank=True)
+    source_files = models.JSONField(default=list, blank=True)
     result_json = models.JSONField(default=dict, blank=True)
     model_tier = models.CharField(max_length=32, default='high_accuracy')
     model_name = models.CharField(max_length=128, blank=True)
@@ -238,3 +240,24 @@ class AIBusinessCard(WorkspaceScopedModel):
 
     def __str__(self):
         return self.full_name or self.original_filename
+
+
+class AIChatSession(WorkspaceScopedModel):
+    last_context = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ('-created_at',)
+
+    def __str__(self):
+        return f'Chat {self.pk}'
+
+
+class AIChatTurn(TimeStampedModel):
+    session = models.ForeignKey(AIChatSession, on_delete=models.CASCADE, related_name='turns')
+    question = models.TextField()
+    answer = models.TextField()
+    intent = models.CharField(max_length=32, blank=True)
+    sources = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        ordering = ('created_at',)

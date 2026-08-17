@@ -241,30 +241,41 @@ CARD_CONTENT_TYPES = {
     'image/png',
     'image/webp',
     'image/gif',
+    'image/bmp',
+    'image/tiff',
+    'application/pdf',
+    'application/x-pdf',
 }
-CARD_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+CARD_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tif', '.tiff', '.pdf'}
+MAX_CARD_FILES = 6
+
+
+def _validate_card_upload(value):
+    name = (getattr(value, 'name', '') or '').lower()
+    content_type = (getattr(value, 'content_type', '') or '').lower()
+    ext = ''
+    if '.' in name:
+        ext = '.' + name.rsplit('.', 1)[-1]
+    if ext not in CARD_EXTENSIONS and content_type not in CARD_CONTENT_TYPES:
+        raise serializers.ValidationError('Upload card files as jpg, png, webp, gif, or pdf.')
+    size = getattr(value, 'size', 0) or 0
+    if size > MAX_UPLOAD_BYTES:
+        raise serializers.ValidationError('File is larger than 50 MB.')
+    return value
 
 
 class AICardExtractRequestSerializer(serializers.Serializer):
-    file = serializers.FileField()
+    files = serializers.ListField(child=serializers.FileField(), allow_empty=False)
     model_tier = serializers.ChoiceField(
         choices=AIExtractionRun.MODEL_TIER_CHOICES,
         required=False,
         default=AIExtractionRun.TIER_HIGH,
     )
 
-    def validate_file(self, value):
-        name = (getattr(value, 'name', '') or '').lower()
-        content_type = (getattr(value, 'content_type', '') or '').lower()
-        ext = ''
-        if '.' in name:
-            ext = '.' + name.rsplit('.', 1)[-1]
-        if ext not in CARD_EXTENSIONS and content_type not in CARD_CONTENT_TYPES:
-            raise serializers.ValidationError('Upload a card image (jpg, png, webp).')
-        size = getattr(value, 'size', 0) or 0
-        if size > MAX_UPLOAD_BYTES:
-            raise serializers.ValidationError('File is larger than 50 MB.')
-        return value
+    def validate_files(self, value):
+        if len(value) > MAX_CARD_FILES:
+            raise serializers.ValidationError(f'Upload at most {MAX_CARD_FILES} card files (front, back, extra sides).')
+        return [_validate_card_upload(item) for item in value]
 
 
 class AIBusinessCardSerializer(serializers.ModelSerializer):
@@ -285,8 +296,10 @@ class AIBusinessCardSerializer(serializers.ModelSerializer):
             'website',
             'address',
             'linkedin',
+            'brands',
             'extras',
             'extra_text',
+            'source_files',
             'result_json',
             'model_name',
             'timing',
@@ -316,6 +329,12 @@ class AIBusinessCardSerializer(serializers.ModelSerializer):
         }
 
 
+class AIChatRequestSerializer(serializers.Serializer):
+    message = serializers.CharField(max_length=2000)
+    session_id = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    catalogue_id = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+
+
 class AIBusinessCardListSerializer(serializers.ModelSerializer):
     class Meta:
         model = AIBusinessCard
@@ -328,6 +347,7 @@ class AIBusinessCardListSerializer(serializers.ModelSerializer):
             'company',
             'emails',
             'phones',
+            'brands',
             'duration_ms',
             'estimated_cost_usd',
             'created_at',

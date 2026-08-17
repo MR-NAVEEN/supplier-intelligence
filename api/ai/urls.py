@@ -5,6 +5,7 @@ from .views import (
     AIBusinessCardViewSet,
     AICatalogueProductViewSet,
     AICatalogueViewSet,
+    AIChatView,
     AIExtractionRunViewSet,
 )
 
@@ -19,4 +20,5 @@ urlpatterns = router.urls + [
         AICatalogueProductViewSet.as_view({'get': 'list'}),
         name='ai-catalogue-products',
     ),
+    path('chat/', AIChatView.as_view(), name='ai-chat'),
 ]

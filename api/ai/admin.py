@@ -4,6 +4,8 @@ from .models import (
     AIBusinessCard,
     AICatalogue,
     AICatalogueUpload,
+    AIChatSession,
+    AIChatTurn,
     AIExtractedPage,
     AIExtractedProduct,
     AIExtractionRun,
@@ -50,4 +52,16 @@ class AIExtractedProductAdmin(admin.ModelAdmin):
 @admin.register(AIBusinessCard)
 class AIBusinessCardAdmin(admin.ModelAdmin):
     list_display = ('id', 'full_name', 'company', 'status', 'created_at')
-    readonly_fields = ('created_at', 'updated_at', 'result_json', 'cost_breakdown')
+    readonly_fields = ('created_at', 'updated_at', 'result_json', 'source_files', 'cost_breakdown')
+
+
+@admin.register(AIChatSession)
+class AIChatSessionAdmin(admin.ModelAdmin):
+    list_display = ('id', 'workspace', 'updated_at')
+    readonly_fields = ('created_at', 'updated_at', 'last_context')
+
+
+@admin.register(AIChatTurn)
+class AIChatTurnAdmin(admin.ModelAdmin):
+    list_display = ('id', 'session', 'intent', 'created_at')
+    readonly_fields = ('created_at', 'updated_at', 'sources')
