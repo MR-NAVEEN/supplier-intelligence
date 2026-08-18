@@ -122,7 +122,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["api", "ai", "extract", ""]
             },
-            "description": "POST /api/ai/extract/\n\nPayload:\n- file (PDF)\n- page_mode=full\nCapped by AI_MAX_PAGES_PER_REQUEST (default 30)."
+            "description": "POST /api/ai/extract/\n\nPayload:\n- file (PDF)\n- page_mode=full\nCapped by AI_MAX_PAGES_PER_REQUEST (default 100)."
           },
           "response": []
         },

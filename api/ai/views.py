@@ -158,7 +158,7 @@ class AIExtractionRunViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
         uploads = data['files']
         kind = classify_upload(uploads[0])
 
-        max_pages = int(os.environ.get('AI_MAX_PAGES_PER_REQUEST', '30'))
+        max_pages = int(os.environ.get('AI_MAX_PAGES_PER_REQUEST', '100'))
         model_tier = data.get('model_tier') or AIExtractionRun.TIER_HIGH
         model_name = MODEL_TIERS.get(model_tier, MODEL_TIERS['high_accuracy'])
         dpi = data.get('dpi') or 200
