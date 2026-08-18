@@ -1,346 +1,317 @@
+import json
+import os
 import re
-from decimal import Decimal, InvalidOperation
+import time
 
-from django.db.models import Q
+from django.db import connection
 
-from api.ai.models import AICatalogue, AIExtractedProduct
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
 
-STOPWORDS = {
-    'a',
-    'an',
-    'and',
-    'the',
-    'of',
-    'for',
-    'in',
-    'on',
-    'at',
-    'to',
-    'is',
-    'are',
-    'was',
-    'what',
-    'whats',
-    'which',
-    'who',
-    'how',
-    'much',
-    'many',
-    'please',
-    'tell',
-    'me',
-    'show',
-    'list',
-    'give',
-    'from',
-    'with',
-    'catalogue',
-    'catalog',
-    'pdf',
-    'product',
-    'products',
-    'item',
-    'items',
-    'price',
-    'prices',
-    'mrp',
-    'cost',
-    'costs',
-    'rupees',
-    'rs',
-    'inr',
-    'page',
-    'pages',
-    'w',
-    'watt',
-    'watts',
+from api.ai.models import AICatalogue, AIExtractedPage, AIExtractedProduct
+from api.ai.services.extraction import MODEL_TIERS
+
+MAX_SQL_RETRIES = 3
+MAX_SAMPLE_ROWS = 5
+
+MODEL_MAP = {
+    AICatalogue._meta.db_table: AICatalogue,
+    AIExtractedPage._meta.db_table: AIExtractedPage,
+    AIExtractedProduct._meta.db_table: AIExtractedProduct,
+}
+ALLOWED_TABLES = frozenset(MODEL_MAP)
+
+PRIMARY_MODEL = MODEL_TIERS['balanced']
+FALLBACK_MODELS = (MODEL_TIERS['high_accuracy'], 'gpt-4o-mini')
+
+DIALECT_READ_ONLY = {
+    'sqlite': 'SELECT or WITH',
+    'postgresql': 'SELECT or WITH',
+    'mysql': 'SELECT or WITH',
 }
 
-BRAND_HINTS = ('finger', 'jbl')
+BANNED_SQL_KEYWORDS = (
+    'INSERT', 'UPDATE', 'DELETE', 'DROP', 'ALTER', 'CREATE', 'REPLACE', 'ATTACH', 'DETACH', 'PRAGMA',
+)
+
+ANALYZE_PROMPT = """\
+You are a friendly, expert {dialect} data analyst answering questions about a product catalogue database.
+Study the schema knowledge and infer which tables/columns/joins answer the user.
+
+Return JSON only:
+{{
+  "status": "query" | "clarify" | "off_topic",
+  "sql": "SELECT ..." or null,
+  "message": "natural human reply when not executing SQL",
+  "sample_questions": ["..."]
+}}
+
+Rules:
+- Use only read-only SQL ({read_only_clause}).
+- Use relations from the knowledge base to choose JOINs.
+- Use LIKE for fuzzy text search when helpful.
+- Do NOT add LIMIT unless the user explicitly asks for top/first/limited rows.
+- Select only columns needed to answer the question.
+- Apply precise WHERE filters from the question (e.g. brand, product name, price criteria, page number).
+- ai_aiextractedproduct and ai_aiextractedpage keep old superseded rows from prior extraction runs.
+  ALWAYS filter is_current = 1 on both tables unless the user explicitly asks about history/previous versions.
+- status=query when you can write SQL confidently.
+- status=clarify when the question is vague but likely about this catalogue data;
+  ask one helpful follow-up in message and include sample_questions.
+- status=off_topic when unrelated to catalogues/products;
+  explain politely in message and include sample_questions the user could ask.
+
+SCHEMA KNOWLEDGE:
+{schema_context}
+"""
+
+FIX_SQL_PROMPT = """\
+You fix broken {dialect} queries for a catalogue data analyst agent.
+Return JSON: {{"sql":"..."}}.
+Keep queries read-only ({read_only_clause}). Do not add LIMIT unless the user asked for limited rows.
+ai_aiextractedproduct and ai_aiextractedpage keep old superseded rows; keep any is_current = 1 filter intact.
+
+SCHEMA KNOWLEDGE:
+{schema_context}
+"""
+
+RESPOND_PROMPT = """\
+You are a concise business assistant. Answer ONLY what the user asked — nothing extra.
+
+Rules:
+- Use only the query results provided. Do not invent data.
+- If the user specified a catalogue, brand, product, or price — answer only for that scope.
+- Do NOT offer follow-up suggestions unless there are zero matching rows.
+- If row_count is greater than the sample size, state the total count and summarize the sample; do not list every row.
+- Keep the answer to 1-3 short sentences. No markdown bold, no bullet dumps.
+- If no rows match, say so in one sentence and suggest one clearer filter.
+"""
+
+FAILURE_PROMPT = """\
+You are a helpful catalogue database assistant.
+The user's question could not be answered because the SQL failed.
+Explain what went wrong in plain language and suggest 3 better questions.
+Be natural and concise.
+
+SCHEMA KNOWLEDGE:
+{schema_context}
+"""
 
 
-def normalize_text(text):
-    text = (text or '').lower().replace('&', ' and ')
-    text = re.sub(r'(\d+)\s*watts?\b', r'\1 w', text)
-    text = re.sub(r'([a-z])(\d)', r'\1 \2', text)
-    text = re.sub(r'(\d)([a-z])', r'\1 \2', text)
-    text = re.sub(r'[^a-z0-9]+', ' ', text)
-    return re.sub(r'\s+', ' ', text).strip()
-
-
-def tokens(text, drop_brands=False):
-    words = [w for w in normalize_text(text).split() if w and w not in STOPWORDS]
-    if drop_brands:
-        words = [w for w in words if w not in BRAND_HINTS]
-    return words
-
-
-def _parse_decimal(raw):
-    try:
-        return Decimal(str(raw))
-    except (InvalidOperation, TypeError, ValueError):
+def _truncate(value, limit=120):
+    if value is None:
         return None
+    text = str(value)
+    return text if len(text) <= limit else text[: limit - 3] + '...'
 
 
-def detect_catalogue(question, catalogue_id=None):
-    if catalogue_id:
-        return AICatalogue.objects.filter(pk=catalogue_id).first()
-    blob = normalize_text(question)
-    for cat in AICatalogue.objects.all():
-        hay = normalize_text(f'{cat.title} {cat.brand} {cat.source_filename}')
-        hints = [h for h in hay.split() if len(h) >= 3]
-        if any(h in blob for h in hints):
-            return cat
-    return None
+def _relation_lines():
+    lines = []
+    for table, model in MODEL_MAP.items():
+        for field in model._meta.fields:
+            if field.is_relation and field.related_model in MODEL_MAP.values():
+                lines.append(
+                    f'{table}.{field.column} -> {field.related_model._meta.db_table}.{field.related_model._meta.pk.column}'
+                )
+    return lines
 
 
-def detect_intent(question):
-    q = normalize_text(question)
-    if re.search(r'\b(cheapest|lowest|least expensive|min price)\b', q):
-        return 'cheapest'
-    if re.search(r'\b(most expensive|highest|costliest|max price|priciest)\b', q):
-        return 'expensive'
-    if re.search(r'\b(under|below|less than|cheaper than|upto|up to)\b', q):
-        return 'under'
-    if re.search(r'\b(above|over|more than|greater than)\b', q):
-        return 'over'
-    if re.search(r'\b(how many|count|number of)\b', q):
-        return 'count'
-    if re.search(r'\bpage\s+\d+\b', q):
-        return 'page'
-    if re.search(r'\b(vs|versus|compare|difference between)\b', q):
-        return 'compare'
-    if re.search(r'\b(list|show|all products|which products|what products)\b', q):
-        return 'list'
-    if re.search(r'\b(price|mrp|cost|how much)\b', q):
-        return 'price'
-    return 'lookup'
+def build_schema_context():
+    lines = [f'database={connection.vendor} tables={len(ALLOWED_TABLES)}', 'relations:']
+    lines += [f'  - {line}' for line in _relation_lines()]
+    for table, model in sorted(MODEL_MAP.items()):
+        cols = ', '.join(
+            f"{f.column}{'*' if f.primary_key else ''}:{f.get_internal_type()}" for f in model._meta.fields
+        )
+        lines.append(f'\n{table} [{model.objects.count()} rows]')
+        lines.append(f'  columns: {cols}')
+        for idx, obj in enumerate(model.objects.order_by('-id')[:2], start=1):
+            sample = {f.column: _truncate(getattr(obj, f.attname)) for f in model._meta.fields}
+            lines.append(f'  sample_{idx}: {json.dumps(sample, default=str, ensure_ascii=False)}')
+    return '\n'.join(lines)
 
 
-def extract_price_limit(question):
-    match = re.search(
-        r'(?:under|below|less than|cheaper than|upto|up to|above|over|more than|greater than)\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)',
-        normalize_text(question),
-    )
-    if not match:
-        match = re.search(r'\b(\d{3,6})\b', normalize_text(question))
-    return _parse_decimal(match.group(1)) if match else None
+def _cte_names(sql):
+    return {m.lower() for m in re.findall(r'(?:\bWITH\b|,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s+AS\s*\(', sql, re.IGNORECASE)}
 
 
-def extract_page_number(question):
-    match = re.search(r'\bpage\s+(\d+)\b', normalize_text(question))
-    return int(match.group(1)) if match else None
+def _referenced_tables(sql):
+    return {m.lower() for m in re.findall(r'\b(?:from|join)\s+"?([a-zA-Z_][a-zA-Z0-9_]*)"?', sql, re.IGNORECASE)}
 
 
-def product_payload(product):
-    price = product.price
-    return {
-        'id': product.id,
-        'catalogue_id': product.catalogue_id,
-        'catalogue': product.catalogue.title,
-        'brand': product.catalogue.brand,
-        'page_number': product.page_number,
-        'product_name': product.product_name,
-        'code_or_sku': product.code_or_sku,
-        'price': str(price) if price is not None else None,
-        'price_raw': product.price_raw or (str(price) if price is not None else ''),
-        'series': product.series,
-    }
+def is_allowed_sql(sql):
+    cleaned = re.sub(r'--.*?\n|/\*.*?\*/', ' ', sql, flags=re.S).strip()
+    if not cleaned:
+        return False
+    first = cleaned.split(None, 1)[0].upper()
+    if first not in {'SELECT', 'WITH'}:
+        return False
+    upper = cleaned.upper()
+    if any(re.search(rf'\b{word}\b', upper) for word in BANNED_SQL_KEYWORDS):
+        return False
+    tables = _referenced_tables(cleaned) - _cte_names(cleaned)
+    return bool(tables) and tables.issubset(ALLOWED_TABLES)
 
 
-def score_product(product, query_tokens):
-    if not query_tokens:
-        return 0
-    name_norm = normalize_text(f'{product.product_name} {product.code_or_sku} {product.series}')
-    name_tokens = set(name_norm.split())
-    score = 0
-    matched = 0
-    for token in query_tokens:
-        if token in name_tokens:
-            score += 18
-            matched += 1
-        elif len(token) >= 4 and token in name_norm:
-            score += 10
-            matched += 1
-        elif len(token) >= 4 and any(token in part or part in token for part in name_tokens if len(part) >= 4):
-            score += 4
-            matched += 1
-    if matched == len(query_tokens) and query_tokens:
-        score += 20
-    compact_name = name_norm.replace(' ', '')
-    compact_query = ''.join(query_tokens)
-    if compact_query and compact_query == compact_name:
-        score += 40
-    elif compact_query and compact_query in compact_name:
-        score += 20
-    return score
+def execute_sql(sql):
+    if not is_allowed_sql(sql):
+        raise ValueError('Only read-only SELECT/WITH queries against catalogue tables are allowed.')
+    with connection.cursor() as cursor:
+        cursor.execute(sql)
+        cols = [c[0] for c in cursor.description or []]
+        rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
+    return cols, rows
 
 
-def search_products(question, catalogue=None, limit=20):
-    qs = AIExtractedProduct.objects.filter(is_current=True).select_related('catalogue')
-    if catalogue:
-        qs = qs.filter(catalogue=catalogue)
-    query_tokens = tokens(question, drop_brands=True)
-    ranked = []
-    for product in qs:
-        ranked.append((score_product(product, query_tokens), product))
-    ranked.sort(key=lambda item: (-item[0], item[1].page_number, item[1].id))
-    if query_tokens:
-        ranked = [item for item in ranked if item[0] > 0]
-        if ranked:
-            top_score = ranked[0][0]
-            cutoff = max(20, int(top_score * 0.72))
-            ranked = [item for item in ranked if item[0] >= cutoff]
-    return [item[1] for item in ranked[:limit]]
+def _require_client():
+    if OpenAI is None:
+        raise RuntimeError('openai package is not installed. Run: pip install openai')
+    api_key = os.environ.get('OPENAI_API_KEY', '')
+    if not api_key:
+        raise RuntimeError('OPENAI_API_KEY is not set.')
+    return OpenAI(api_key=api_key)
 
 
-def base_queryset(catalogue=None):
-    qs = AIExtractedProduct.objects.filter(is_current=True).select_related('catalogue')
-    if catalogue:
-        qs = qs.filter(catalogue=catalogue)
-    return qs
+def _chat(messages, json_mode=False, temperature=0.2):
+    client = _require_client()
+    last_error = None
+    for model in (PRIMARY_MODEL, *FALLBACK_MODELS):
+        use_temperature = True
+        for _ in range(2):
+            try:
+                kwargs = {'model': model, 'messages': messages}
+                if json_mode:
+                    kwargs['response_format'] = {'type': 'json_object'}
+                if use_temperature:
+                    kwargs['temperature'] = temperature
+                resp = client.chat.completions.create(**kwargs)
+                return resp.choices[0].message.content or ''
+            except Exception as exc:  # noqa: BLE001 - model/param fallback chain
+                last_error = exc
+                msg = str(exc).lower()
+                if use_temperature and 'temperature' in msg and 'unsupported' in msg:
+                    use_temperature = False
+                    continue
+                break
+    raise RuntimeError(f'Could not reach OpenAI API: {last_error}')
 
 
-def retrieve(question, catalogue_id=None, last_context=None):
-    last_context = last_context or {}
-    intent = detect_intent(question)
-    catalogue = detect_catalogue(question, catalogue_id)
-    if catalogue is None and last_context.get('catalogue_id'):
-        followup = bool(
-            re.search(
-                r'\b(it|that|those|them|same|other|what about|how about|and the|cheaper one)\b',
-                normalize_text(question),
+def _chat_json(messages, temperature=0):
+    content = _chat(messages, json_mode=True, temperature=temperature)
+    return json.loads(content)
+
+
+class _SQLAgent:
+    def __init__(self):
+        self.dialect = connection.vendor
+        self.read_only_clause = DIALECT_READ_ONLY.get(self.dialect, 'SELECT or WITH')
+        self.schema_context = build_schema_context()
+
+    def analyze(self, question, catalogue_hint=None):
+        system = ANALYZE_PROMPT.format(
+            dialect=self.dialect, read_only_clause=self.read_only_clause, schema_context=self.schema_context
+        )
+        user_content = question
+        if catalogue_hint:
+            user_content = (
+                f'{question}\n\n(Context: the user is currently focused on catalogue id={catalogue_hint}; '
+                'prefer filtering to that catalogue unless the question clearly asks about something else.)'
             )
+        return _chat_json([{'role': 'system', 'content': system}, {'role': 'user', 'content': user_content}])
+
+    def fix_sql(self, question, sql, error):
+        system = FIX_SQL_PROMPT.format(
+            dialect=self.dialect, read_only_clause=self.read_only_clause, schema_context=self.schema_context
         )
-        reuse_intents = {'cheapest', 'expensive', 'list', 'count', 'page', 'under', 'over'}
-        if followup or intent in reuse_intents:
-            catalogue = AICatalogue.objects.filter(pk=last_context['catalogue_id']).first()
-    qs = base_queryset(catalogue)
+        payload = json.dumps({'question': question, 'sql': sql, 'error': error}, default=str, ensure_ascii=False)
+        result = _chat_json([{'role': 'system', 'content': system}, {'role': 'user', 'content': payload}])
+        return str(result.get('sql', '')).strip()
 
-    if intent == 'cheapest':
-        products = list(qs.exclude(price__isnull=True).order_by('price', 'id')[:5])
-    elif intent == 'expensive':
-        products = list(qs.exclude(price__isnull=True).order_by('-price', 'id')[:5])
-    elif intent in {'under', 'over'}:
-        limit = extract_price_limit(question)
-        if limit is None:
-            products = []
-        elif intent == 'under':
-            products = list(qs.filter(price__lt=limit).order_by('price', 'id'))
-        else:
-            products = list(qs.filter(price__gt=limit).order_by('price', 'id'))
-    elif intent == 'page':
-        page_number = extract_page_number(question)
-        products = list(qs.filter(page_number=page_number).order_by('id')) if page_number else []
-    elif intent == 'count':
-        products = list(qs.order_by('page_number', 'id'))
-    elif intent == 'list':
-        products = list(qs.order_by('page_number', 'id'))
-    elif intent == 'compare':
-        parts = re.split(r'\b(?:vs|versus|compare|difference between|and)\b', normalize_text(question))
-        found = []
-        seen = set()
-        for part in parts:
-            part = part.strip()
-            if len(part) < 3:
-                continue
-            matches = search_products(part, catalogue=catalogue, limit=1)
-            if matches and matches[0].id not in seen:
-                found.append(matches[0])
-                seen.add(matches[0].id)
-        if len(found) < 2:
-            found = search_products(question, catalogue=catalogue, limit=4)
-        products = found[:4]
-    else:
-        products = search_products(question, catalogue=catalogue, limit=8)
-        if intent == 'price' and products:
-            products = products[:1]
-        if not products and last_context.get('product_ids'):
-            products = list(qs.filter(id__in=last_context['product_ids']))
-
-    return {
-        'intent': intent,
-        'catalogue': catalogue,
-        'products': products,
-    }
-
-
-def format_price(product):
-    if product.price_raw:
-        return product.price_raw
-    if product.price is not None:
-        return str(product.price).rstrip('0').rstrip('.')
-    return 'not listed'
-
-
-def _scope_label(catalogue):
-    return catalogue.title if catalogue else 'the extracted catalogues'
-
-
-def build_answer(question, retrieved):
-    intent = retrieved['intent']
-    catalogue = retrieved['catalogue']
-    products = retrieved['products']
-    scope = _scope_label(catalogue)
-
-    if intent == 'count':
-        if catalogue:
-            return f'{catalogue.title} has {len(products)} extracted product(s).'
-        return f'There are {len(products)} extracted product(s) across the saved catalogues.'
-
-    if not products:
-        return f'I do not see that in {_scope_label(catalogue)}. Ask using a product name from the extracted catalogue.'
-
-    if intent == 'cheapest':
-        top = products[0]
-        return f'The cheapest product in {scope} is {top.product_name} at {format_price(top)} (page {top.page_number}).'
-
-    if intent == 'expensive':
-        top = products[0]
-        return f'The most expensive product in {scope} is {top.product_name} at {format_price(top)} (page {top.page_number}).'
-
-    if intent == 'page':
-        page_number = extract_page_number(question) or products[0].page_number
-        names = ', '.join(f'{p.product_name} ({format_price(p)})' for p in products)
-        return f'Page {page_number} of {scope} has: {names}.'
-
-    if intent in {'under', 'over', 'list'}:
-        names = ', '.join(f'{p.product_name} ({format_price(p)})' for p in products)
-        verb = 'under' if intent == 'under' else 'over' if intent == 'over' else 'in'
-        if intent == 'list':
-            return f'{len(products)} product(s) in {scope}: {names}.'
-        limit = extract_price_limit(question)
-        return f'{len(products)} product(s) {verb} {limit} in {scope}: {names}.'
-
-    if intent == 'compare':
-        bits = [f'{p.product_name} is {format_price(p)}' for p in products]
-        return 'Compared from the catalogue: ' + '; '.join(bits) + '.'
-
-    if intent == 'price' or len(products) == 1:
-        top = products[0]
-        return (
-            f'{top.product_name} is listed at {format_price(top)} in {top.catalogue.title} '
-            f'(page {top.page_number}).'
+    def respond(self, question, rows):
+        payload = json.dumps(
+            {
+                'question': question,
+                'row_count': len(rows),
+                'sample_size': min(len(rows), MAX_SAMPLE_ROWS),
+                'rows_sample': rows[:MAX_SAMPLE_ROWS],
+                'note': 'Answer only the user question. Full data stays in DB; you see a sample only.',
+            },
+            default=str,
+            ensure_ascii=False,
         )
+        return _chat(
+            [{'role': 'system', 'content': RESPOND_PROMPT}, {'role': 'user', 'content': payload}],
+            temperature=0.4,
+        ).strip()
 
-    names = ', '.join(f'{p.product_name} ({format_price(p)})' for p in products)
-    return f'Matches in {scope}: {names}.'
+    def explain_failure(self, question, sql, error):
+        system = FAILURE_PROMPT.format(schema_context=self.schema_context)
+        payload = json.dumps({'question': question, 'sql': sql, 'error': error}, default=str, ensure_ascii=False)
+        return _chat(
+            [{'role': 'system', 'content': system}, {'role': 'user', 'content': payload}],
+            temperature=0.4,
+        ).strip()
+
+    def handle(self, question, catalogue_hint=None):
+        question = (question or '').strip()
+        if not question:
+            return {
+                'answer': 'Please enter a question about the catalogue data.',
+                'intent': 'clarify',
+                'sources': [],
+                'context': {},
+            }
+
+        analysis = self.analyze(question, catalogue_hint=catalogue_hint)
+        status = analysis.get('status', 'clarify')
+
+        if status in {'clarify', 'off_topic'}:
+            message = (analysis.get('message') or '').strip()
+            samples = analysis.get('sample_questions') or []
+            if samples:
+                message = f'{message}\n\nYou could ask:\n' + '\n'.join(f'- {item}' for item in samples[:2])
+            return {'answer': message, 'intent': status, 'sources': [], 'context': {'sample_questions': samples}}
+
+        sql = (analysis.get('sql') or '').strip().rstrip(';')
+        if not sql:
+            return {
+                'answer': analysis.get('message') or "I couldn't turn that into a query. Could you rephrase?",
+                'intent': 'clarify',
+                'sources': [],
+                'context': {},
+            }
+
+        last_error = ''
+        for attempt in range(1, MAX_SQL_RETRIES + 1):
+            try:
+                cols, rows = execute_sql(sql)
+                answer = self.respond(question, rows)
+                return {
+                    'answer': answer,
+                    'intent': 'query',
+                    'sources': rows[:MAX_SAMPLE_ROWS],
+                    'context': {'sql': sql, 'row_count': len(rows)},
+                }
+            except Exception as exc:  # noqa: BLE001 - self-heal via LLM
+                last_error = str(exc)
+                if attempt >= MAX_SQL_RETRIES:
+                    break
+                sql = self.fix_sql(question, sql, last_error).rstrip(';')
+                if not sql:
+                    break
+                time.sleep(1)
+
+        return {
+            'answer': self.explain_failure(question, sql, last_error),
+            'intent': 'error',
+            'sources': [],
+            'context': {'sql': sql},
+        }
 
 
 def answer_question(question, catalogue_id=None, last_context=None):
-    retrieved = retrieve(question, catalogue_id=catalogue_id, last_context=last_context)
-    answer = build_answer(question, retrieved)
-    products = retrieved['products']
-    catalogue = retrieved['catalogue']
-    sources = [product_payload(p) for p in products]
-    context = {
-        'catalogue_id': catalogue.id if catalogue else None,
-        'intent': retrieved['intent'],
-        'product_ids': [p.id for p in products],
-    }
-    return {
-        'answer': answer,
-        'intent': retrieved['intent'],
-        'sources': sources,
-        'context': context,
-    }
+    agent = _SQLAgent()
+    result = agent.handle(question, catalogue_hint=catalogue_id)
+    return result
