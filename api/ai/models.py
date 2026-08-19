@@ -270,59 +270,6 @@ def ai_card_upload_path(instance, filename):
     return f'ai/cards/{instance.workspace_id}/{filename}'
 
 
-class AIBusinessCard(WorkspaceScopedModel):
-    STATUS_PENDING = 'pending'
-    STATUS_SUCCEEDED = 'succeeded'
-    STATUS_FAILED = 'failed'
-    STATUS_CHOICES = [
-        (STATUS_PENDING, 'Pending'),
-        (STATUS_SUCCEEDED, 'Succeeded'),
-        (STATUS_FAILED, 'Failed'),
-    ]
-
-    image = models.FileField(upload_to=ai_card_upload_path)
-    original_filename = models.CharField(max_length=255)
-    content_type = models.CharField(max_length=128, blank=True)
-    file_size_bytes = models.BigIntegerField(default=0)
-    status = models.CharField(max_length=32, choices=STATUS_CHOICES, default=STATUS_PENDING)
-    full_name = models.CharField(max_length=255, blank=True, db_index=True)
-    job_title = models.CharField(max_length=255, blank=True)
-    company = models.CharField(max_length=255, blank=True, db_index=True)
-    emails = models.JSONField(default=list, blank=True)
-    phones = models.JSONField(default=list, blank=True)
-    website = models.CharField(max_length=255, blank=True)
-    address = models.TextField(blank=True)
-    linkedin = models.CharField(max_length=255, blank=True)
-    brands = models.JSONField(default=list, blank=True)
-    extras = models.JSONField(default=dict, blank=True)
-    extra_text = models.TextField(blank=True)
-    source_files = models.JSONField(default=list, blank=True)
-    result_json = models.JSONField(default=dict, blank=True)
-    model_tier = models.CharField(max_length=32, default='high_accuracy')
-    model_name = models.CharField(max_length=128, blank=True)
-    started_at = models.DateTimeField(null=True, blank=True)
-    finished_at = models.DateTimeField(null=True, blank=True)
-    duration_ms = models.PositiveIntegerField(null=True, blank=True)
-    prompt_tokens = models.PositiveIntegerField(default=0)
-    completion_tokens = models.PositiveIntegerField(default=0)
-    total_tokens = models.PositiveIntegerField(default=0)
-    estimated_cost_usd = models.DecimalField(max_digits=12, decimal_places=6, default=0)
-    cost_breakdown = models.JSONField(default=dict, blank=True)
-    error_message = models.TextField(blank=True)
-    created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        related_name='ai_business_cards',
-    )
-
-    class Meta:
-        ordering = ('-created_at',)
-
-    def __str__(self):
-        return self.full_name or self.original_filename
-
-
 class AIChatSession(WorkspaceScopedModel):
     last_context = models.JSONField(default=dict, blank=True)
 
