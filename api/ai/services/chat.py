@@ -1,7 +1,9 @@
+import datetime
 import json
 import os
 import re
 import time
+from decimal import Decimal
 
 from django.db import connection
 
@@ -155,13 +157,21 @@ def is_allowed_sql(sql):
     return bool(tables) and tables.issubset(ALLOWED_TABLES)
 
 
+def _json_safe(value):
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, (datetime.date, datetime.datetime)):
+        return value.isoformat()
+    return value
+
+
 def execute_sql(sql):
     if not is_allowed_sql(sql):
         raise ValueError('Only read-only SELECT/WITH queries against catalogue tables are allowed.')
     with connection.cursor() as cursor:
         cursor.execute(sql)
         cols = [c[0] for c in cursor.description or []]
-        rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
+        rows = [{k: _json_safe(v) for k, v in zip(cols, row)} for row in cursor.fetchall()]
     return cols, rows
 
 
