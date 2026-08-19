@@ -1,5 +1,22 @@
 # AI App — API Documentation
 
+This file covers **two separate apps** that both deal with business cards and suppliers — don't confuse them:
+
+| | This doc's sections 1–13 | The section at the very bottom |
+|---|---|---|
+| App | `api/ai/` | `api/business_cards/` |
+| Base path | `/api/ai/` | `/api/business-cards/` |
+| Auth | none (`AllowAny`) | login required (JWT) + workspace header |
+| Business card model | `AIBusinessCard` | `BusinessCard` (different table, different app) |
+| Business card workflow | OCR a card → structured contact fields, optionally tagged to a supplier | OCR a card (async job) → **commit it to create a brand-new `Supplier`**, or link to an existing one |
+| Catalogue extraction | ✅ (this is the main app) | n/a — no catalogue concept here |
+
+They happen to share the same underlying OCR function (`api.ai.services.card_extract.extract_business_card`) but write to different tables and serve different purposes. If you're building the "scan a card at a trade show and it becomes a new supplier" flow, that's the `business_cards` app (bottom of this doc). If you're building "OCR a card and keep it as a searchable contact record," that's `/api/ai/cards/`.
+
+---
+
+# Part 1 — AI app (`/api/ai/`)
+
 Base path: `/api/ai/`
 Auth: none required (`AllowAny` on every endpoint — no token needed)
 Every response is wrapped in the same envelope:
@@ -666,3 +683,133 @@ Imported cards show up immediately in `GET /api/ai/cards/` and `GET /api/ai/card
 |---|---|
 | 400 | not `.xlsx`/`.xlsm`/`.csv`/`.tsv`, more than one file, `.xls` (legacy), file over 50MB, empty sheet, no `full_name`/`company` column detected (even after the AI fallback), bad `column_map` JSON |
 | 400 | DB write failure during the batch (rare — reported as "Could not save imported cards") |
+
+---
+
+# Part 2 — Legacy Business Cards app (`/api/business-cards/`)
+
+**Different app from Part 1.** Base path: `/api/business-cards/` (note the hyphen — different from `/api/ai/cards/`).
+**Auth required:** `Authorization: Bearer <jwt>` header, plus `X-Workspace-Id: <id>` header on every request (missing workspace → `400 {"message": "X-Workspace-Id header is required."}`). `commit/` additionally requires workspace-admin, not just workspace-member.
+
+This app's job is narrower and more specific than the `ai` app's card OCR: scan a business card, then turn it into a `Supplier` record (or link it to one that already exists). It reuses the same OCR engine as `/api/ai/cards/` under the hood, but writes to its own `BusinessCard` model — extracted cards here don't show up in `/api/ai/cards/` and vice versa.
+
+`supplier` is **optional** everywhere in this app (unlike the `ai` app, where it's required on every write) — deliberately, because the whole point of `commit/` is to create a supplier from a card you haven't linked to one yet. If you already know the supplier, pass it; if not, `commit/` makes one for you from the OCR'd data.
+
+## 1. Extract (OCR) a business card — `POST /api/business-cards/extract/` (or `POST /api/business-cards/suppliers/{supplier_id}/extract/`)
+
+Uploads a card image, kicks off OCR as a background job (Celery — synchronous in this dev environment since `CELERY_TASK_ALWAYS_EAGER=True`), returns immediately with a `job_id`.
+
+### Payload (`multipart/form-data`)
+
+| Field | Required | Notes |
+|---|---|---|
+| `file` (or `image`) | yes | the card photo |
+| `supplier` | no | optional id of an existing `Supplier` in your workspace to pre-link this card to |
+
+```
+POST /api/business-cards/extract/
+Authorization: Bearer <jwt>
+X-Workspace-Id: 3
+
+file = card.jpg
+```
+
+### Response (`201`)
+
+```json
+{
+  "success": true,
+  "status": "201",
+  "message": "Extraction started",
+  "data": {
+    "job_id": 1,
+    "business_card": {
+      "id": 1,
+      "image": "/media/business_cards/card.jpg",
+      "extracted_data": {},
+      "status": "extracted",
+      "supplier": null,
+      "job": 1,
+      "created_at": "...",
+      "updated_at": "..."
+    }
+  }
+}
+```
+
+Note: `extracted_data` in this immediate response is usually still empty — it reflects the card's state right when the row was created, before the OCR job (even running synchronously) writes its result back. Fetch `GET /api/business-cards/{id}/` a moment later, or poll the job, to see the populated `extracted_data`.
+
+### Errors
+
+| Status | Cause |
+|---|---|
+| 400 | no `X-Workspace-Id` header, no file, `supplier` id doesn't exist in your workspace |
+| 401 | not authenticated |
+
+## 2. Commit a business card → create or link a supplier — `POST /api/business-cards/commit/` (or `POST /api/business-cards/suppliers/{supplier_id}/commit/`)
+
+Requires **workspace admin**. Takes a previously-extracted card and either creates a brand-new `Supplier` from its OCR'd data, or — if you pass a `supplier` id — links it to that existing supplier instead (no duplicate created).
+
+### Payload (JSON)
+
+| Field | Required | Notes |
+|---|---|---|
+| `business_card_id` | yes | id from the `extract/` step |
+| `extracted_data` | no | override/supply the contact fields directly instead of using what OCR found (`name`, `company_name`, `email`, `phone`) |
+| `supplier` | no | id of an existing supplier to link to instead of creating a new one |
+
+### Example — create a new supplier from the scanned card (default)
+
+```json
+{ "business_card_id": 1 }
+```
+
+### Example — link to a supplier you already know about
+
+```
+POST /api/business-cards/suppliers/2/commit/
+Content-Type: application/json
+
+{ "business_card_id": 1 }
+```
+
+### Response (`201`)
+
+```json
+{
+  "success": true,
+  "status": "201",
+  "message": "Business card committed",
+  "data": {
+    "supplier_id": 3,
+    "business_card_id": 1,
+    "supplier_created": true
+  }
+}
+```
+
+`supplier_created` tells you which path was taken — `true` if a new `Supplier` was made from the card, `false` if it was linked to the `supplier` id you passed in.
+
+## 3. List business cards — `GET /api/business-cards/` (or `GET /api/business-cards/suppliers/{supplier_id}/`)
+
+Scoped to your workspace automatically. Optional filters: `?supplier={id}`, `?status=extracted|committed|failed`.
+
+## 4. Retrieve one business card — `GET /api/business-cards/{id}/`
+
+```json
+{
+  "success": true,
+  "status": "200",
+  "message": "Success",
+  "data": {
+    "id": 2,
+    "image": "/media/business_cards/card.jpg",
+    "extracted_data": { "name": "Jane Doe", "company_name": "Acme Corp", "email": [], "phone": [], "title": "Sales" },
+    "status": "committed",
+    "supplier": 2,
+    "job": 2,
+    "created_at": "...",
+    "updated_at": "..."
+  }
+}
+```
