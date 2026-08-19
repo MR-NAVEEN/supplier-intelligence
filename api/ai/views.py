@@ -334,7 +334,12 @@ class AICatalogueProductViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet, mix
         return AIExtractedProductSerializer
 
     def get_queryset(self):
-        qs = AIExtractedProduct.objects.filter(is_current=True).select_related('catalogue')
+        qs = AIExtractedProduct.objects.select_related('catalogue')
+        # is_current only filters the list view. Retrieve/update/destroy operate on a
+        # specific id and must still find soft-deleted rows, or DELETE would make a row
+        # permanently unreachable via the API even though it's still in the DB.
+        if self.action == 'list':
+            qs = qs.filter(is_current=True)
         catalogue_id = self.kwargs.get('catalogue_pk')
         if catalogue_id:
             qs = qs.filter(catalogue_id=catalogue_id)
