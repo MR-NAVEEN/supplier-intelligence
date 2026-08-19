@@ -8,14 +8,21 @@ from .models import (
     AIExtractedProduct,
     AIExtractionRun,
 )
-
-MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+from .services.files import (
+    MAX_UPLOAD_BYTES,
+    classify_upload,
+    upload_too_large,
+)
 
 
 class AIExtractRequestSerializer(serializers.Serializer):
-    file = serializers.FileField()
     card = serializers.CharField(required=True)
-    page_mode = serializers.ChoiceField(choices=AIExtractionRun.PAGE_MODE_CHOICES)
+    files = serializers.ListField(child=serializers.FileField(), allow_empty=False)
+    page_mode = serializers.ChoiceField(
+        choices=AIExtractionRun.PAGE_MODE_CHOICES,
+        required=False,
+        allow_null=True,
+    )
     page_count = serializers.IntegerField(required=False, allow_null=True, min_value=1)
     page_range = serializers.CharField(required=False, allow_blank=True, max_length=128)
     model_tier = serializers.ChoiceField(
@@ -25,26 +32,63 @@ class AIExtractRequestSerializer(serializers.Serializer):
     )
     dpi = serializers.IntegerField(required=False, default=200, min_value=72, max_value=300)
 
-    def validate_file(self, value):
-        name = (getattr(value, 'name', '') or '').lower()
-        content_type = (getattr(value, 'content_type', '') or '').lower()
-        if not name.endswith('.pdf') and content_type not in ('application/pdf', 'application/x-pdf'):
-            raise serializers.ValidationError('Only PDF files are accepted.')
-        size = getattr(value, 'size', 0) or 0
-        if size > MAX_UPLOAD_BYTES:
-            raise serializers.ValidationError('PDF is larger than 50 MB.')
+    def validate_files(self, value):
+        kinds = []
+        for item in value:
+            if upload_too_large(item):
+                raise serializers.ValidationError('Each file must be 50 MB or smaller.')
+            kind = classify_upload(item)
+            if kind in {'spreadsheet', 'xls'}:
+                raise serializers.ValidationError(
+                    'Excel/CSV files must be sent to POST /api/ai/bulk-upload/, not /api/ai/extract/.'
+                )
+            if kind == 'unknown':
+                raise serializers.ValidationError(
+                    f'{item.name}: upload a PDF or photo (jpg, png, webp, gif, tiff).'
+                )
+            kinds.append(kind)
+        unique = set(kinds)
+        if 'pdf' in unique and 'image' in unique:
+            raise serializers.ValidationError('Send either one PDF or photo files, not both in the same request.')
+        if kinds.count('pdf') > 1:
+            raise serializers.ValidationError('Upload one PDF per request.')
         return value
 
     def validate(self, attrs):
+        files = attrs.get('files') or []
+        kinds = {classify_upload(item) for item in files}
         mode = attrs.get('page_mode')
         card = AIBusinessCard.objects.filter(id = attrs.get('card')).first()
         if not card:
             raise serializers.ValidationError("give me the valid card id")
+        if 'pdf' in kinds and not mode:
+            raise serializers.ValidationError({'page_mode': 'Required for PDF uploads (full, first_n, or range).'})
+        if not mode:
+            attrs['page_mode'] = AIExtractionRun.MODE_FULL
+            mode = attrs['page_mode']
         if mode == AIExtractionRun.MODE_FIRST_N and not attrs.get('page_count'):
             raise serializers.ValidationError({'page_count': 'Required when page_mode is first_n.'})
         if mode == AIExtractionRun.MODE_RANGE and not (attrs.get('page_range') or '').strip():
             raise serializers.ValidationError({'page_range': 'Required when page_mode is range.'})
         return attrs
+
+
+class AIBulkUploadRequestSerializer(serializers.Serializer):
+    file = serializers.FileField()
+    sheet = serializers.CharField(required=False, allow_blank=True, max_length=128)
+    header_row = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    column_map = serializers.CharField(required=False, allow_blank=True)
+    max_rows = serializers.IntegerField(required=False, allow_null=True, min_value=1, max_value=20000)
+
+    def validate_file(self, value):
+        if upload_too_large(value):
+            raise serializers.ValidationError('File is larger than 50 MB.')
+        kind = classify_upload(value)
+        if kind == 'xls':
+            raise serializers.ValidationError('Legacy .xls is not supported. Save as .xlsx or CSV.')
+        if kind != 'spreadsheet':
+            raise serializers.ValidationError('Upload a .xlsx, .xlsm, .csv, or .tsv file.')
+        return value
 
 
 class AICatalogueUploadSerializer(serializers.ModelSerializer):
@@ -269,30 +313,41 @@ CARD_CONTENT_TYPES = {
     'image/png',
     'image/webp',
     'image/gif',
+    'image/bmp',
+    'image/tiff',
+    'application/pdf',
+    'application/x-pdf',
 }
-CARD_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+CARD_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tif', '.tiff', '.pdf'}
+MAX_CARD_FILES = 6
+
+
+def _validate_card_upload(value):
+    name = (getattr(value, 'name', '') or '').lower()
+    content_type = (getattr(value, 'content_type', '') or '').lower()
+    ext = ''
+    if '.' in name:
+        ext = '.' + name.rsplit('.', 1)[-1]
+    if ext not in CARD_EXTENSIONS and content_type not in CARD_CONTENT_TYPES:
+        raise serializers.ValidationError('Upload card files as jpg, png, webp, gif, or pdf.')
+    size = getattr(value, 'size', 0) or 0
+    if size > MAX_UPLOAD_BYTES:
+        raise serializers.ValidationError('File is larger than 50 MB.')
+    return value
 
 
 class AICardExtractRequestSerializer(serializers.Serializer):
-    file = serializers.FileField()
+    files = serializers.ListField(child=serializers.FileField(), allow_empty=False)
     model_tier = serializers.ChoiceField(
         choices=AIExtractionRun.MODEL_TIER_CHOICES,
         required=False,
         default=AIExtractionRun.TIER_HIGH,
     )
 
-    def validate_file(self, value):
-        name = (getattr(value, 'name', '') or '').lower()
-        content_type = (getattr(value, 'content_type', '') or '').lower()
-        ext = ''
-        if '.' in name:
-            ext = '.' + name.rsplit('.', 1)[-1]
-        if ext not in CARD_EXTENSIONS and content_type not in CARD_CONTENT_TYPES:
-            raise serializers.ValidationError('Upload a card image (jpg, png, webp).')
-        size = getattr(value, 'size', 0) or 0
-        if size > MAX_UPLOAD_BYTES:
-            raise serializers.ValidationError('File is larger than 50 MB.')
-        return value
+    def validate_files(self, value):
+        if len(value) > MAX_CARD_FILES:
+            raise serializers.ValidationError(f'Upload at most {MAX_CARD_FILES} card files (front, back, extra sides).')
+        return [_validate_card_upload(item) for item in value]
 
 
 class AIBusinessCardSerializer(serializers.ModelSerializer):
@@ -313,8 +368,10 @@ class AIBusinessCardSerializer(serializers.ModelSerializer):
             'website',
             'address',
             'linkedin',
+            'brands',
             'extras',
             'extra_text',
+            'source_files',
             'result_json',
             'model_name',
             'timing',
@@ -344,6 +401,12 @@ class AIBusinessCardSerializer(serializers.ModelSerializer):
         }
 
 
+class AIChatRequestSerializer(serializers.Serializer):
+    message = serializers.CharField(max_length=2000)
+    session_id = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    catalogue_id = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+
+
 class AIBusinessCardListSerializer(serializers.ModelSerializer):
     class Meta:
         model = AIBusinessCard
@@ -356,6 +419,7 @@ class AIBusinessCardListSerializer(serializers.ModelSerializer):
             'company',
             'emails',
             'phones',
+            'brands',
             'duration_ms',
             'website',
             'address',

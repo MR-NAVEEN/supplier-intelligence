@@ -30,7 +30,7 @@ def _require_fitz():
         raise RuntimeError(_PYMUPDF_INSTALL_HINT)
 
 MODEL_TIERS = {
-    'budget': os.environ.get('AI_MODEL_BUDGET', 'gpt-5.6-luna'),
+    'budget': os.environ.get('AI_MODEL_BUDGET', 'gpt-5.6-sol'),
     'balanced': os.environ.get('AI_MODEL_BALANCED', 'gpt-5.4-mini'),
     'high_accuracy': os.environ.get('AI_MODEL_HIGH_ACCURACY', 'gpt-5.4'),
 }
@@ -46,9 +46,30 @@ def pdf_page_count(pdf_path):
 
 
 def image_to_data_url(path):
+    ext = os.path.splitext(path)[1].lower()
+    mime = {
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.webp': 'image/webp',
+        '.gif': 'image/gif',
+        '.bmp': 'image/bmp',
+        '.tif': 'image/tiff',
+        '.tiff': 'image/tiff',
+    }.get(ext, 'image/jpeg')
     with open(path, 'rb') as handle:
         b64 = base64.b64encode(handle.read()).decode('utf-8')
-    return f'data:image/jpeg;base64,{b64}'
+    return f'data:{mime};base64,{b64}'
+
+
+def _image_size(path):
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            return image.size
+    except Exception:
+        return (0, 0)
 
 
 def _clean_price_value(value):
@@ -113,19 +134,25 @@ def _usage_from_response(resp):
     return {'prompt_tokens': prompt, 'completion_tokens': completion, 'total_tokens': total}
 
 
-def extract_page(client, model_name, image_path, page_num, width, height, retries=3):
+def extract_page(client, model_name, image_path, page_num, width, height, retries=3, source_kind='pdf'):
     data_url = image_to_data_url(image_path)
+    rotation = (
+        ' This may be a photo of a printed catalogue page; rotate mentally if the image is sideways.'
+        if source_kind == 'image'
+        else ''
+    )
     user_text = (
-        f'This is page {page_num} of the catalogue. The image is {width}x{height} pixels. '
+        f'This is page {page_num} of the catalogue. The image is {width}x{height} pixels.{rotation} '
         f'Extract PRODUCT LISTINGS only. Skip all advertisements, lifestyle/promo content, '
         f'brand slogans, and company/marketing pages (this applies to every catalogue). '
         f"If this page is only an ad/promo, return page_type 'advertisement' and products []. "
         f"If a price is printed like 'MRP:-5990', store price as '5990' (no leading dash)."
     )
     last_error = None
+    use_temperature = True
     for attempt in range(retries):
         try:
-            resp = client.chat.completions.create(
+            kwargs = dict(
                 model=model_name,
                 response_format={'type': 'json_object'},
                 messages=[
@@ -138,8 +165,10 @@ def extract_page(client, model_name, image_path, page_num, width, height, retrie
                         ],
                     },
                 ],
-                temperature=0,
             )
+            if use_temperature:
+                kwargs['temperature'] = 0
+            resp = client.chat.completions.create(**kwargs)
             content = resp.choices[0].message.content or '{}'
             data = sanitize_page_data(json.loads(content))
             return data, _usage_from_response(resp)
@@ -156,6 +185,10 @@ def extract_page(client, model_name, image_path, page_num, width, height, retrie
                 )
             ):
                 raise
+            if use_temperature and 'temperature' in msg and 'unsupported' in msg:
+                # Some model tiers (e.g. gpt-5.6-*) only allow the default temperature.
+                use_temperature = False
+                continue
             time.sleep(2 * (attempt + 1))
     return (
         {
@@ -219,6 +252,53 @@ def extract_catalogue(pdf_path, page_numbers, model_name, dpi=200):
     finally:
         doc.close()
 
+    return {
+        'result': result,
+        'usage': usage,
+        'advertisement_pages_skipped': skipped,
+    }
+
+
+def _require_openai():
+    if OpenAI is None:
+        raise RuntimeError('openai package is not installed. Run: pip install openai')
+    api_key = os.environ.get('OPENAI_API_KEY', '')
+    if not api_key:
+        raise RuntimeError('OPENAI_API_KEY is not set.')
+    return OpenAI(api_key=api_key)
+
+
+def extract_catalogue_from_images(image_paths, page_numbers, model_name):
+    """image_paths are filesystem paths in upload order. page_numbers are 1-based indexes into that list."""
+    client = _require_openai()
+    usage = {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0}
+    skipped = 0
+    total = len(image_paths)
+    result = {
+        'source_file': os.path.basename(image_paths[0]) if image_paths else 'catalogue',
+        'source_type': 'images',
+        'total_pages_in_pdf': total,
+        'pages_processed': [],
+        'pages': [],
+    }
+    for page_num in page_numbers:
+        if page_num < 1 or page_num > total:
+            continue
+        path = image_paths[page_num - 1]
+        width, height = _image_size(path)
+        data, page_usage = extract_page(
+            client, model_name, path, page_num, width, height, source_kind='image'
+        )
+        data['page_number'] = page_num
+        usage['prompt_tokens'] += page_usage['prompt_tokens']
+        usage['completion_tokens'] += page_usage['completion_tokens']
+        usage['total_tokens'] += page_usage['total_tokens']
+        if keep_product_page(data):
+            data['products'] = [p for p in (data.get('products') or []) if is_listable_product(p)]
+            result['pages'].append(data)
+            result['pages_processed'].append(page_num)
+        else:
+            skipped += 1
     return {
         'result': result,
         'usage': usage,

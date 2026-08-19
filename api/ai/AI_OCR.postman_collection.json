@@ -1,0 +1,552 @@
+{
+  "info": {
+    "_postman_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "name": "Supplier Intelligence — AI OCR (All Endpoints)",
+    "description": "ALL /api/ai/ endpoints:\n\nCATALOGUE EXTRACTION\n1. POST /api/ai/extract/\n2. GET  /api/ai/extract/\n3. GET  /api/ai/extract/{id}/\n4. GET  /api/ai/catalogues/\n5. GET  /api/ai/catalogues/{id}/\n6. GET  /api/ai/catalogues/{id}/products/\n\nBUSINESS CARD OCR\n7. POST /api/ai/cards/\n8. GET  /api/ai/cards/\n9. GET  /api/ai/cards/{id}/\n\nCATALOGUE CHAT\n10. POST /api/ai/chat/\n\nBase URL: {{baseUrl}} = http://127.0.0.1:8000\nAuth: none (AI demo open).\nDocs: api/ai/API_GUIDE.md",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://127.0.0.1:8000" },
+    { "key": "extractRunId", "value": "1" },
+    { "key": "catalogueId", "value": "1" },
+    { "key": "cardId", "value": "1" },
+    { "key": "sessionId", "value": "1" }
+  ],
+  "item": [
+    {
+      "name": "1. Catalogue PDF Extraction",
+      "description": "Upload PDF catalogues, extract products as JSON, list runs and normalized catalogue schema.",
+      "item": [
+        {
+          "name": "1.1 POST Extract PDF — first_n pages",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const body = pm.response.json();",
+                  "  if (body.data && body.data.id) pm.collectionVariables.set('extractRunId', String(body.data.id));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": [], "description": "PDF only" },
+                { "key": "page_mode", "value": "first_n", "type": "text" },
+                { "key": "page_count", "value": "5", "type": "text" },
+                { "key": "model_tier", "value": "high_accuracy", "type": "text" },
+                { "key": "dpi", "value": "200", "type": "text" }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/extract/",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "extract", ""]
+            },
+            "description": "POST /api/ai/extract/\n\nPayload (form-data):\n- file (File, PDF)\n- page_mode=first_n\n- page_count=5\n- model_tier=high_accuracy (optional)\n- dpi=200 (optional)"
+          },
+          "response": [
+            {
+              "name": "Sample 201 Extraction completed",
+              "originalRequest": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    { "key": "file", "type": "file", "src": [] },
+                    { "key": "page_mode", "value": "first_n", "type": "text" },
+                    { "key": "page_count", "value": "5", "type": "text" }
+                  ]
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/ai/extract/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "ai", "extract", ""]
+                }
+              },
+              "status": "Created",
+              "code": 201,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"success\": true,\n  \"status\": \"201\",\n  \"message\": \"Extraction completed\",\n  \"data\": {\n    \"id\": 4,\n    \"status\": \"succeeded\",\n    \"page_mode\": \"first_n\",\n    \"pages_requested\": [1, 2, 3, 4, 5],\n    \"summary\": {\n      \"pages_kept\": 5,\n      \"products_count\": 12,\n      \"advertisement_pages_skipped\": 0\n    },\n    \"result\": {\n      \"pages\": [\n        {\n          \"page_number\": 1,\n          \"page_type\": \"product_listing\",\n          \"products\": [\n            {\n              \"product_name\": \"SOUNDKING-5W\",\n              \"price\": \"1499\",\n              \"code_or_sku\": null\n            }\n          ]\n        }\n      ]\n    },\n    \"timing\": { \"duration_ms\": 17626, \"duration_seconds\": 17.63 },\n    \"costing\": { \"estimated_cost_usd\": \"0.059360\", \"currency\": \"USD\" }\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "1.2 POST Extract PDF — page range",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": [] },
+                { "key": "page_mode", "value": "range", "type": "text" },
+                { "key": "page_range", "value": "16-20", "type": "text", "description": "Also 1,3,5-7" },
+                { "key": "model_tier", "value": "high_accuracy", "type": "text" }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/extract/",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "extract", ""]
+            },
+            "description": "POST /api/ai/extract/\n\nPayload:\n- file (PDF)\n- page_mode=range\n- page_range=16-20"
+          },
+          "response": []
+        },
+        {
+          "name": "1.3 POST Extract PDF — full document",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": [] },
+                { "key": "page_mode", "value": "full", "type": "text" },
+                { "key": "model_tier", "value": "balanced", "type": "text" }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/extract/",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "extract", ""]
+            },
+            "description": "POST /api/ai/extract/\n\nPayload:\n- file (PDF)\n- page_mode=full\nCapped by AI_MAX_PAGES_PER_REQUEST (default 100)."
+          },
+          "response": []
+        },
+        {
+          "name": "1.4 GET List all extract runs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/extract/",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "extract", ""]
+            },
+            "description": "GET /api/ai/extract/"
+          },
+          "response": [
+            {
+              "name": "Sample 200 list",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/ai/extract/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "ai", "extract", ""]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"success\": true,\n  \"status\": \"200\",\n  \"message\": \"Success\",\n  \"data\": {\n    \"count\": 4,\n    \"next\": null,\n    \"previous\": null,\n    \"results\": [\n      {\n        \"id\": 4,\n        \"source_file\": \"FINGER 2026.pdf\",\n        \"status\": \"succeeded\",\n        \"page_mode\": \"first_n\",\n        \"pages_requested\": [1, 2, 3, 4, 5],\n        \"pages_kept\": 5,\n        \"products_count\": 12,\n        \"duration_ms\": 17626,\n        \"estimated_cost_usd\": \"0.059360\",\n        \"created_at\": \"2026-08-11T12:43:14.305096+05:30\"\n      }\n    ]\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "1.5 GET Extract run by id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/extract/{{extractRunId}}/",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "extract", "{{extractRunId}}", ""]
+            },
+            "description": "GET /api/ai/extract/{id}/"
+          },
+          "response": []
+        },
+        {
+          "name": "1.6 GET List catalogues",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const rows = (pm.response.json().data || {}).results || [];",
+                  "  if (rows.length) pm.collectionVariables.set('catalogueId', String(rows[0].id));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/catalogues/",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "catalogues", ""]
+            },
+            "description": "GET /api/ai/catalogues/"
+          },
+          "response": [
+            {
+              "name": "Sample 200 catalogues",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/ai/catalogues/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "ai", "catalogues", ""]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"success\": true,\n  \"status\": \"200\",\n  \"message\": \"Success\",\n  \"data\": {\n    \"count\": 2,\n    \"next\": null,\n    \"previous\": null,\n    \"results\": [\n      {\n        \"id\": 2,\n        \"title\": \"FINGER 2026\",\n        \"brand\": \"FINGER\",\n        \"source_filename\": \"FINGER 2026.pdf\",\n        \"total_pages\": 5,\n        \"current_run\": 4,\n        \"products_count\": 12,\n        \"pages_count\": 5\n      }\n    ]\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "1.7 GET Catalogue schema detail",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/catalogues/{{catalogueId}}/",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "catalogues", "{{catalogueId}}", ""]
+            },
+            "description": "GET /api/ai/catalogues/{id}/\n\nReturns catalogue + pages + nested products."
+          },
+          "response": []
+        },
+        {
+          "name": "1.8 GET Catalogue products (all)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/catalogues/{{catalogueId}}/products/",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "catalogues", "{{catalogueId}}", "products", ""]
+            },
+            "description": "GET /api/ai/catalogues/{id}/products/"
+          },
+          "response": []
+        },
+        {
+          "name": "1.9 GET Catalogue products — filter page_number",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/catalogues/{{catalogueId}}/products/?page_number=1",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "catalogues", "{{catalogueId}}", "products", ""],
+              "query": [
+                { "key": "page_number", "value": "1" }
+              ]
+            },
+            "description": "GET /api/ai/catalogues/{id}/products/?page_number=1"
+          },
+          "response": []
+        },
+        {
+          "name": "1.10 GET Catalogue products — filter sku",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/catalogues/{{catalogueId}}/products/?sku=SOUND",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "catalogues", "{{catalogueId}}", "products", ""],
+              "query": [
+                { "key": "sku", "value": "SOUND" }
+              ]
+            },
+            "description": "GET /api/ai/catalogues/{id}/products/?sku=SOUND"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "2. Business Card OCR",
+      "description": "Upload business card images, extract contact fields as JSON, list and fetch saved cards.",
+      "item": [
+        {
+          "name": "2.1 POST Extract business card",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const body = pm.response.json();",
+                  "  if (body.data && body.data.id) pm.collectionVariables.set('cardId', String(body.data.id));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": [], "description": "jpg / png / webp / gif" },
+                { "key": "model_tier", "value": "high_accuracy", "type": "text" }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/cards/",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "cards", ""]
+            },
+            "description": "POST /api/ai/cards/\n\nPayload (form-data):\n- file (image or pdf). Repeat `file` for front + back.\n- model_tier=high_accuracy (optional)"
+          },
+          "response": [
+            {
+              "name": "Sample 201 Card extracted",
+              "originalRequest": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    { "key": "file", "type": "file", "src": [] },
+                    { "key": "model_tier", "value": "high_accuracy", "type": "text" }
+                  ]
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/ai/cards/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "ai", "cards", ""]
+                }
+              },
+              "status": "Created",
+              "code": 201,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"success\": true,\n  \"status\": \"201\",\n  \"message\": \"Card extracted\",\n  \"data\": {\n    \"id\": 1,\n    \"status\": \"succeeded\",\n    \"full_name\": \"VANAPALLI BHASKAR\",\n    \"job_title\": \"Founder & Director\",\n    \"company\": \"The Event Planners\",\n    \"emails\": [\"vbtheeventplanners@gmail.com\"],\n    \"phones\": [\"+91 9000 229777\", \"+91 79953 49777\"],\n    \"website\": \"vbtheeventplanners.com\",\n    \"address\": \"Visakhapatnam - 03\",\n    \"linkedin\": \"\",\n    \"extras\": {},\n    \"extra_text\": \"Crafting Memories\",\n    \"result_json\": {\n      \"full_name\": \"VANAPALLI BHASKAR\",\n      \"company\": \"The Event Planners\",\n      \"emails\": [\"vbtheeventplanners@gmail.com\"],\n      \"phones\": [\"+91 9000 229777\", \"+91 79953 49777\"]\n    },\n    \"timing\": { \"duration_ms\": 6517, \"duration_seconds\": 6.52 },\n    \"costing\": { \"estimated_cost_usd\": \"0.007588\", \"currency\": \"USD\" }\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "2.2 GET List all cards",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const rows = (pm.response.json().data || {}).results || [];",
+                  "  if (rows.length) pm.collectionVariables.set('cardId', String(rows[0].id));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/cards/",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "cards", ""]
+            },
+            "description": "GET /api/ai/cards/"
+          },
+          "response": [
+            {
+              "name": "Sample 200 list cards",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/ai/cards/",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "ai", "cards", ""]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"success\": true,\n  \"status\": \"200\",\n  \"message\": \"Success\",\n  \"data\": {\n    \"count\": 1,\n    \"next\": null,\n    \"previous\": null,\n    \"results\": [\n      {\n        \"id\": 1,\n        \"original_filename\": \"card.jpeg\",\n        \"status\": \"succeeded\",\n        \"full_name\": \"VANAPALLI BHASKAR\",\n        \"job_title\": \"Founder & Director\",\n        \"company\": \"The Event Planners\",\n        \"emails\": [\"vbtheeventplanners@gmail.com\"],\n        \"phones\": [\"+91 9000 229777\", \"+91 79953 49777\"],\n        \"duration_ms\": 6517,\n        \"estimated_cost_usd\": \"0.007588\",\n        \"created_at\": \"2026-08-11T14:02:06.679748+05:30\"\n      }\n    ]\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "2.3 GET List cards — filter company",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/cards/?company=Event",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "cards", ""],
+              "query": [
+                { "key": "company", "value": "Event" }
+              ]
+            },
+            "description": "GET /api/ai/cards/?company=Event"
+          },
+          "response": []
+        },
+        {
+          "name": "2.4 GET List cards — filter name",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/cards/?name=Bhaskar",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "cards", ""],
+              "query": [
+                { "key": "name", "value": "Bhaskar" }
+              ]
+            },
+            "description": "GET /api/ai/cards/?name=Bhaskar"
+          },
+          "response": []
+        },
+        {
+          "name": "2.5 GET List cards — search q",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/cards/?q=planner",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "cards", ""],
+              "query": [
+                { "key": "q", "value": "planner" }
+              ]
+            },
+            "description": "GET /api/ai/cards/?q=planner\n\nSearches full_name, company, job_title."
+          },
+          "response": []
+        },
+        {
+          "name": "2.6 GET Card detail by id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/cards/{{cardId}}/",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "cards", "{{cardId}}", ""]
+            },
+            "description": "GET /api/ai/cards/{id}/"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "3. Catalogue Chat",
+      "description": "Ask questions against extracted Finger / JBL catalogue rows.",
+      "item": [
+        {
+          "name": "3.1 POST Chat — product price",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  if (body.data && body.data.session_id) pm.collectionVariables.set('sessionId', String(body.data.session_id));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message\": \"What is the MRP of SOUNDKING-5W?\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/chat/",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "chat", ""]
+            },
+            "description": "POST /api/ai/chat/\n\nJSON payload:\n{ \"message\": \"...\", \"session_id\": optional, \"catalogue_id\": optional }"
+          },
+          "response": []
+        },
+        {
+          "name": "3.2 POST Chat — cheapest Finger",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message\": \"What is the cheapest product in the Finger catalogue?\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/chat/",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "chat", ""]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "3.3 POST Chat — follow-up",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message\": \"What about the most expensive?\",\n  \"session_id\": {{sessionId}}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/chat/",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "chat", ""]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "3.4 POST Chat — JBL compare",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message\": \"Compare WAVE BUDS 2 vs WAVE BEAM 2\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/chat/",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "chat", ""]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

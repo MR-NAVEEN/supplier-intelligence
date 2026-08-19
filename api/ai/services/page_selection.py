@@ -35,7 +35,7 @@ def parse_page_range(selection, total_pages):
     return sorted(indices)
 
 
-def resolve_pages(page_mode, total_pages, page_count=None, page_range=None, max_pages=30):
+def resolve_pages(page_mode, total_pages, page_count=None, page_range=None, max_pages=100):
     if total_pages < 1:
         raise ValidationError({'file': 'PDF has no readable pages.'})
 
