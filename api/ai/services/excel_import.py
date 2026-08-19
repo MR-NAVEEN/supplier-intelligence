@@ -1,12 +1,19 @@
-import csv
-import json
+import logging
 import os
-import re
-from io import StringIO
 
-from openpyxl import load_workbook
+from api.ai.services.extraction import MODEL_TIERS, _clean_price_value
+from api.ai.services.spreadsheet_common import (
+    AI_SAMPLE_ROWS,
+    MAX_EMPTY_STREAK,
+    ai_guess_column_map,
+    build_column_map,
+    _cell_text,
+    detect_header_row,
+    parse_user_column_map as _parse_user_column_map,
+    read_rows,
+)
 
-from api.ai.services.extraction import _clean_price_value
+logger = logging.getLogger(__name__)
 
 CANONICAL_FIELDS = (
     'product_name',
@@ -64,138 +71,50 @@ HEADER_SYNONYMS = {
     'page_number': {'page', 'page no', 'page number', 'pg'},
 }
 
-MAX_HEADER_SCAN_ROWS = 20
-MAX_EMPTY_STREAK = 25
+FIELD_HINTS = {
+    'product_name': 'the product/item name or title',
+    'code_or_sku': 'a SKU, model number, article number, or product code',
+    'price': 'a price/MRP/rate — numeric, often with currency symbols',
+    'currency': 'a currency code like INR, USD',
+    'description': 'a free-text description or spec of the product',
+    'series': 'a product series, category, brand, or collection name',
+    'page_number': 'a catalogue page number this row belongs to',
+}
 
-
-def _norm_header(value):
-    text = str(value or '').strip().lower()
-    text = text.replace('\n', ' ')
-    text = re.sub(r'[^a-z0-9]+', ' ', text)
-    return re.sub(r'\s+', ' ', text).strip()
-
-
-def guess_field(header):
-    key = _norm_header(header)
-    if not key:
-        return None
-    best = None
-    best_len = -1
-    for field, aliases in HEADER_SYNONYMS.items():
-        candidates = set(aliases)
-        candidates.add(field.replace('_', ' '))
-        for alias in candidates:
-            if key == alias and len(alias) > best_len:
-                best = field
-                best_len = len(alias)
-    return best
-
-
-def _cell_text(value):
-    if value is None:
-        return ''
-    if isinstance(value, float) and value.is_integer():
-        return str(int(value))
-    return str(value).strip()
-
-
-def detect_header_row(rows):
-    best_index = 0
-    best_score = -1
-    limit = min(len(rows), MAX_HEADER_SCAN_ROWS)
-    for index in range(limit):
-        mapped = [guess_field(cell) for cell in rows[index]]
-        score = sum(1 for field in mapped if field)
-        filled = sum(1 for cell in rows[index] if _cell_text(cell))
-        if score > best_score and filled >= 2:
-            best_score = score
-            best_index = index
-    return best_index, best_score
-
-
-def build_column_map(headers, user_map=None):
-    """Map canonical field -> column index."""
-    mapping = {}
-    user_map = user_map or {}
-    normalized_headers = [_norm_header(h) for h in headers]
-    for field, header_name in user_map.items():
-        if field not in CANONICAL_FIELDS:
-            continue
-        wanted = _norm_header(header_name)
-        if wanted in normalized_headers:
-            mapping[field] = normalized_headers.index(wanted)
-        else:
-            try:
-                mapping[field] = int(header_name)
-            except (TypeError, ValueError):
-                continue
-    for index, header in enumerate(headers):
-        field = guess_field(header)
-        if field and field not in mapping:
-            mapping[field] = index
-    return mapping
+AI_MAPPING_MODEL = os.environ.get('AI_MODEL_COLUMN_MAPPING', MODEL_TIERS['balanced'])
 
 
 def parse_user_column_map(raw):
-    if not raw:
-        return {}
-    if isinstance(raw, dict):
-        return {str(k): str(v) for k, v in raw.items() if str(k) in CANONICAL_FIELDS}
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ValueError('column_map must be valid JSON, e.g. {"product_name":"Item","price":"MRP"}.') from exc
-    if not isinstance(data, dict):
-        raise ValueError('column_map must be a JSON object.')
-    return {str(k): str(v) for k, v in data.items() if str(k) in CANONICAL_FIELDS}
-
-
-def _read_csv_rows(path):
-    with open(path, 'rb') as handle:
-        raw = handle.read()
-    text = raw.decode('utf-8-sig', errors='replace')
-    sample = text[:4096]
-    try:
-        dialect = csv.Sniffer().sniff(sample, delimiters=',\t;|')
-    except csv.Error:
-        dialect = csv.excel
-    reader = csv.reader(StringIO(text), dialect)
-    return [list(row) for row in reader]
-
-
-def _read_xlsx_rows(path, sheet=None):
-    workbook = load_workbook(path, read_only=True, data_only=True)
-    try:
-        if sheet in (None, ''):
-            worksheet = workbook.worksheets[0]
-        else:
-            try:
-                worksheet = workbook.worksheets[int(sheet)]
-            except (TypeError, ValueError, IndexError):
-                if sheet not in workbook.sheetnames:
-                    raise ValueError(
-                        f'Sheet {sheet!r} not found. Available: {", ".join(workbook.sheetnames)}'
-                    )
-                worksheet = workbook[sheet]
-        rows = []
-        for row in worksheet.iter_rows(values_only=True):
-            rows.append([cell for cell in row])
-        return rows, worksheet.title
-    finally:
-        workbook.close()
+    return _parse_user_column_map(raw, CANONICAL_FIELDS)
 
 
 def rows_to_products(rows, column_map=None, header_row=None, max_rows=5000):
     if not rows:
         raise ValueError('The spreadsheet is empty.')
     if header_row is None:
-        header_index, _score = detect_header_row(rows)
+        header_index, _score = detect_header_row(rows, HEADER_SYNONYMS)
     else:
         header_index = max(int(header_row) - 1, 0)
         if header_index >= len(rows):
             raise ValueError('header_row is past the end of the sheet.')
     headers = [_cell_text(cell) or f'column_{i + 1}' for i, cell in enumerate(rows[header_index])]
-    mapping = build_column_map(headers, column_map)
+    mapping = build_column_map(headers, HEADER_SYNONYMS, CANONICAL_FIELDS, column_map)
+    mapping_source = 'user' if column_map else 'heuristic'
+
+    if 'product_name' not in mapping and 'code_or_sku' not in mapping:
+        sample_rows = rows[header_index + 1 : header_index + 1 + AI_SAMPLE_ROWS]
+        try:
+            ai_mapping = ai_guess_column_map(
+                headers, sample_rows, CANONICAL_FIELDS, FIELD_HINTS, AI_MAPPING_MODEL
+            )
+        except Exception as exc:  # noqa: BLE001 - AI fallback is best-effort
+            logger.warning('AI column mapping fallback failed: %s', exc)
+            ai_mapping = {}
+        if ai_mapping:
+            for field, index in ai_mapping.items():
+                mapping.setdefault(field, index)
+            mapping_source = 'ai'
+
     if 'product_name' not in mapping and 'code_or_sku' not in mapping:
         raise ValueError(
             'Could not detect product name or SKU column. '
@@ -258,24 +177,14 @@ def rows_to_products(rows, column_map=None, header_row=None, max_rows=5000):
         'headers': headers,
         'header_row': header_index + 1,
         'column_map': {field: headers[index] for field, index in mapping.items() if index < len(headers)},
+        'column_map_source': mapping_source,
         'products': products,
         'rows_skipped': skipped,
     }
 
 
 def import_spreadsheet(path, sheet=None, column_map=None, header_row=None, max_rows=5000):
-    ext = os.path.splitext(path)[1].lower()
-    sheet_name = None
-    if ext in {'.csv', '.tsv'}:
-        rows = _read_csv_rows(path)
-        sheet_name = os.path.basename(path)
-    elif ext in {'.xlsx', '.xlsm'}:
-        rows, sheet_name = _read_xlsx_rows(path, sheet=sheet)
-    elif ext == '.xls':
-        raise ValueError('Legacy .xls is not supported. Save as .xlsx or CSV and upload again.')
-    else:
-        raise ValueError('Upload a .xlsx, .xlsm, .csv, or .tsv file.')
-
+    rows, sheet_name = read_rows(path, sheet=sheet)
     parsed = rows_to_products(rows, column_map=column_map, header_row=header_row, max_rows=max_rows)
     by_page = {}
     for product in parsed['products']:
@@ -301,6 +210,7 @@ def import_spreadsheet(path, sheet=None, column_map=None, header_row=None, max_r
             'sheet': sheet_name,
             'header_row': parsed['header_row'],
             'column_map': parsed['column_map'],
+            'column_map_source': parsed['column_map_source'],
             'total_pages_in_pdf': len(pages) or 1,
             'pages_processed': [page['page_number'] for page in pages],
             'pages': pages,

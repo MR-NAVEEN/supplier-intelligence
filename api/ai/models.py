@@ -19,7 +19,7 @@ class AIBusinessCard(WorkspaceScopedModel):
         (STATUS_FAILED, 'Failed'),
     ]
 
-    image = models.FileField(upload_to=ai_card_upload_path)
+    image = models.FileField(upload_to=ai_card_upload_path, null=True, blank=True)
     original_filename = models.CharField(max_length=255)
     content_type = models.CharField(max_length=128, blank=True)
     file_size_bytes = models.BigIntegerField(default=0)
@@ -69,7 +69,9 @@ def ai_catalogue_upload_path(instance, filename):
 class AICatalogue(WorkspaceScopedModel):
     business_card = models.ForeignKey(
         AIBusinessCard,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name='catalogue_business_card',
     )
     title = models.CharField(max_length=255)
@@ -100,10 +102,12 @@ class AICatalogue(WorkspaceScopedModel):
 
 class AICatalogueUpload(WorkspaceScopedModel):
     business_card = models.ForeignKey(
-            AIBusinessCard,
-            on_delete=models.CASCADE,
-            related_name='catalogue_upload_business_card',
-        )
+        AIBusinessCard,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='catalogue_upload_business_card',
+    )
     catalogue = models.ForeignKey(
         AICatalogue,
         on_delete=models.SET_NULL,
@@ -161,10 +165,12 @@ class AIExtractionRun(TimeStampedModel):
     ]
 
     business_card = models.ForeignKey(
-            AIBusinessCard,
-            on_delete=models.CASCADE,
-            related_name='catalogue_extration_run_business_card',
-        )
+        AIBusinessCard,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='catalogue_extration_run_business_card',
+    )
     workspace = models.ForeignKey(
         'workspaces.Workspace',
         on_delete=models.CASCADE,
@@ -219,10 +225,12 @@ class AIExtractionRun(TimeStampedModel):
 
 class AIExtractedPage(TimeStampedModel):
     business_card = models.ForeignKey(
-            AIBusinessCard,
-            on_delete=models.CASCADE,
-            related_name='catalogue_page_business_card',
-        )
+        AIBusinessCard,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='catalogue_page_business_card',
+    )
     catalogue = models.ForeignKey(AICatalogue, on_delete=models.CASCADE, related_name='pages')
     run = models.ForeignKey(AIExtractionRun, on_delete=models.CASCADE, related_name='extracted_pages')
     page_number = models.PositiveIntegerField()
@@ -239,10 +247,12 @@ class AIExtractedPage(TimeStampedModel):
 
 class AIExtractedProduct(TimeStampedModel):
     business_card = models.ForeignKey(
-            AIBusinessCard,
-            on_delete=models.CASCADE,
-            related_name='catalogue_product_business_card',
-        )
+        AIBusinessCard,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='catalogue_product_business_card',
+    )
     catalogue = models.ForeignKey(AICatalogue, on_delete=models.CASCADE, related_name='products')
     run = models.ForeignKey(AIExtractionRun, on_delete=models.CASCADE, related_name='extracted_products')
     page = models.ForeignKey(

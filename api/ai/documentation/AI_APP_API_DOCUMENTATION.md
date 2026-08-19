@@ -26,9 +26,13 @@ On failure, `success` is `false`, `status` is the HTTP code as a string, and `me
 
 ---
 
-## ⚠️ Known issue (as of 2026-08-19)
+## ✅ Resolved (2026-08-19): catalogues and business cards are now fully independent
 
-A recent merge added a **required** `card` field (business card id) to `POST /api/ai/extract/`, and a required, non-nullable `business_card` link on the underlying `AICatalogue` / `AICatalogueUpload` / `AIExtractionRun` / `AIExtractedPage` / `AIExtractedProduct` models. On top of that, there's an argument-count bug (`_succeed_run` calls `persist_run_to_schema(run, result)` with 2 args, but the function now requires 3) that makes `POST /api/ai/extract/` throw a `TypeError` on every request, and `POST /api/ai/bulk-upload/` throw a `NOT NULL constraint` error, **after** the AI/parsing work has already run. This doc describes the intended/working contract; if you hit a 500 on these two endpoints right now, this is why.
+Catalogue extraction and business-card data do **not** need to be linked — most catalogues have no associated business card, and most business cards aren't tied to a catalogue. `business_card` on `AICatalogue` / `AICatalogueUpload` / `AIExtractionRun` / `AIExtractedPage` / `AIExtractedProduct` is now **optional** (nullable, `on_delete=SET_NULL`) — it's still there if you *want* to tag a catalogue with the business card it came from, but nothing requires it anymore. `card` on `POST /api/ai/extract/` is likewise optional now.
+
+While fixing this, also fixed a real bug it was masking: `POST /api/ai/extract/` was calling the AI vision extraction **twice** per PDF request (leftover from a botched merge) — double cost, double time, for the exact same result. Verified live: an 8-page PDF now runs in ~27s / ~$0.10, matching a single pass (previously would have been ~2x that).
+
+Both `POST /api/ai/extract/` and `POST /api/ai/bulk-upload/` are confirmed working end-to-end again as of this update.
 
 ---
 
@@ -40,7 +44,7 @@ Extracts product listings from a PDF catalogue **or** a set of catalogue photos 
 
 | Field | Required | Notes |
 |---|---|---|
-| `card` | **yes** | id of an `AIBusinessCard` (create one first via `POST /api/ai/cards/`) — see known issue above |
+| `card` | no | optional id of an `AIBusinessCard` to tag this catalogue with (create one first via `POST /api/ai/cards/`) — most extractions don't need this |
 | `file` (repeatable) | yes | the PDF, or one or more photo files. Repeat the key `file` for multiple photos (`files` / `files[]` also accepted) |
 | `page_mode` | required for PDFs | `full`, `first_n`, or `range`. Optional for photos (defaults to `full`) |
 | `page_count` | required if `page_mode=first_n` | integer, e.g. `5` |
@@ -54,13 +58,12 @@ Rules enforced by the server:
 - Max pages per request: `AI_MAX_PAGES_PER_REQUEST` (currently **100**).
 - Can't mix a PDF and photos in the same request. Only one PDF per request (photos can be multiple).
 
-### Example — PDF, first 5 pages
+### Example — PDF, first 5 pages (typical — no card needed)
 
 ```
 POST /api/ai/extract/
 Content-Type: multipart/form-data
 
-card       = 3
 file       = catalogue.pdf
 page_mode  = first_n
 page_count = 5
@@ -73,10 +76,20 @@ model_tier = high_accuracy
 POST /api/ai/extract/
 Content-Type: multipart/form-data
 
-card = 3
 file = page1.jpg
 file = page2.jpg
 file = page3.jpg
+```
+
+### Example — tagging the catalogue with a business card (optional)
+
+```
+POST /api/ai/extract/
+Content-Type: multipart/form-data
+
+card = 3
+file = catalogue.pdf
+page_mode = full
 ```
 
 ### Response (`201`)
@@ -276,7 +289,6 @@ Write payload (`POST`/`PUT`/`PATCH`) — JSON:
 
 ```json
 {
-  "business_card": 3,
   "catalogue": 1,
   "run": 13,
   "page": 40,
@@ -292,7 +304,7 @@ Write payload (`POST`/`PUT`/`PATCH`) — JSON:
   "is_current": true
 }
 ```
-This is meant for manual corrections, not the normal extraction flow — you need valid `catalogue`/`run`/`page` ids from an existing extraction (and currently `business_card`, per the known issue above).
+This is meant for manual corrections, not the normal extraction flow — you need valid `catalogue`/`run`/`page` ids from an existing extraction. `business_card` is accepted too, but optional.
 
 ---
 
@@ -405,7 +417,7 @@ Ask natural-language questions about the extracted catalogue data. An LLM writes
 
 ## 12. Bulk-upload products from Excel/CSV — `POST /api/ai/bulk-upload/`
 
-Imports a spreadsheet of products directly into the database — **no AI call, no OCR**, just parses rows. This is the endpoint for spreadsheets; `/api/ai/extract/` explicitly rejects CSV/XLSX files.
+Imports a spreadsheet of products directly into the database — normally **no AI call, no OCR**, just parses rows. This is the endpoint for spreadsheets; `/api/ai/extract/` explicitly rejects CSV/XLSX files.
 
 ### Payload (`multipart/form-data`)
 
@@ -433,11 +445,15 @@ The importer auto-detects the header row (scans the first 20 rows for the one th
 
 Anything else in the sheet (any extra column not matched above) is kept, not dropped — it gets stored per-row in the product's `attributes` JSON field, keyed by its original header text.
 
+### AI fallback for unrecognized headers
+
+If the synonym dictionary above can't find **either** `product_name` or `code_or_sku` in the headers, the importer automatically asks an LLM to map the columns before giving up — sending it just the header row plus the first 3 data rows (never the whole sheet), and only trusting field/header pairs that actually exist in your file. This means unusual headers like `"What It Is"`, `"Item Desc"`, `"Ref No"` still work without you having to pass `column_map` by hand. The response tells you which path was used via `column_map_source`: `"heuristic"` (dictionary matched it, instant, free), `"ai"` (fallback kicked in, ~1-2s and a fraction of a cent), or `"user"` (you passed `column_map` explicitly, which always wins over both). If the AI can't map it either — or `OPENAI_API_KEY` isn't set — you get the same clean 400 asking for an explicit `column_map`, never a crash.
+
 **Rules:**
-- At least `product_name` or `code_or_sku` must be detected, or the whole import is rejected with a 400.
+- At least `product_name` or `code_or_sku` must be detected (dictionary, then AI, then reject), or the whole import is rejected with a 400.
 - A row with no name, no SKU, *and* no price is skipped (treated as blank/decorative).
 - Rows are grouped into "pages" by `page_number` for display purposes — if you don't include a page column, everything lands on page 1.
-- If auto-detection picks the wrong header row or wrong columns, pass `header_row` and/or `column_map` explicitly.
+- If auto-detection (heuristic or AI) picks the wrong header row or wrong columns, pass `header_row` and/or `column_map` explicitly — an explicit `column_map` always takes priority over both the dictionary and the AI guess.
 
 ### Example minimal CSV
 
@@ -482,6 +498,7 @@ column_map  = {"product_name":"Item Desc","code_or_sku":"Part #","price":"List P
       "sheet": "smoke.csv",
       "header_row": 1,
       "column_map": { "product_name": "product_name", "code_or_sku": "code_or_sku", "price": "price" },
+      "column_map_source": "heuristic",
       "pages": [
         {
           "page_number": 1,
@@ -504,10 +521,128 @@ column_map  = {"product_name":"Item Desc","code_or_sku":"Part #","price":"List P
 }
 ```
 
-Cost is always `0` here — no AI is involved, so it's fast and free. Same underlying storage as `/api/ai/extract/`: it creates/updates an `AICatalogue` (keyed by filename) and writes `AIExtractedPage` / `AIExtractedProduct` rows, so imported products show up in `/api/ai/catalogues/` and are answerable through `/api/ai/chat/` immediately.
+Cost is `0` unless the AI column-mapping fallback triggered (see above) — the row-parsing itself never calls AI. Same underlying storage as `/api/ai/extract/`: it creates/updates an `AICatalogue` (keyed by filename) and writes `AIExtractedPage` / `AIExtractedProduct` rows, so imported products show up in `/api/ai/catalogues/` and are answerable through `/api/ai/chat/` immediately.
 
 ### Errors
 
 | Status | Cause |
 |---|---|
 | 400 | not `.xlsx`/`.xlsm`/`.csv`/`.tsv`, more than one file, `.xls` (legacy), empty sheet, no `product_name`/`code_or_sku` column detected, bad `column_map` JSON |
+
+---
+
+## 13. Bulk-upload business cards from Excel/CSV — `POST /api/ai/cards/bulk-upload/`
+
+Imports business-card contacts directly into the database from a spreadsheet — one row = one `AIBusinessCard`. No image, no OCR; this is for when you already have contact data in a sheet (e.g. exported from a trade show scanner app or a CRM) rather than photos of physical cards. For photos, use `POST /api/ai/cards/` (section 8) instead.
+
+This endpoint only ever writes to `AIBusinessCard` — it has no dependency on catalogues, extraction runs, or `business_card` links at all (`image` is nullable specifically to support this row-per-contact-record flow with no photo). Independent of, and unaffected by, anything happening on the catalogue side.
+
+### Payload (`multipart/form-data`)
+
+| Field | Required | Notes |
+|---|---|---|
+| `file` | yes | `.xlsx`, `.xlsm`, `.csv`, or `.tsv` (legacy `.xls` not supported) |
+| `sheet` | no | sheet name or index (xlsx only); defaults to the first sheet |
+| `header_row` | no | 1-based row number where headers live; auto-detected if omitted |
+| `column_map` | no | JSON string to force a mapping, e.g. `{"full_name":"Contact Person","company":"Organisation"}` |
+| `max_rows` | no (default 5000, max 20000) | safety cap |
+
+### What your Excel/CSV needs to look like
+
+Same auto-detection approach as the product importer — column names don't need to match exactly:
+
+| Canonical field | Recognized header names (any of these) | Required? |
+|---|---|---|
+| `full_name` | Full Name, Name, Contact Name, Contact Person, Person, Person Name, Customer Name | one of `full_name` **or** `company` must be present |
+| `company` | Company, Company Name, Organisation, Organization, Firm, Business Name, Vendor, Employer | (see above) |
+| `job_title` | Job Title, Title, Designation, Position, Role | optional |
+| `emails` | Email, Emails, Email Id, Email Address, E-Mail, Mail, Mail Id | optional, **list field** — see below |
+| `phones` | Phone, Phones, Mobile, Mobile Number, Contact Number, Contact No, Phone Number, Tel, Telephone, Cell | optional, **list field** |
+| `website` | Website, Web, URL, Site, Web Site | optional |
+| `address` | Address, Location, Full Address | optional |
+| `linkedin` | LinkedIn, LinkedIn URL, LinkedIn Profile | optional |
+
+**List fields (`emails`, `phones`):** a single cell can hold multiple values separated by a comma or semicolon, e.g. `jane@acme.com; jane.doe@gmail.com` → stored as `["jane@acme.com", "jane.doe@gmail.com"]`. Duplicates (case-insensitive) are dropped automatically.
+
+Anything else in the sheet is kept in the card's `extras` JSON field, keyed by its original header text — same pattern as `attributes` on products.
+
+### AI fallback for unrecognized headers
+
+Identical mechanism to the product importer (section 12): if neither `full_name` nor `company` can be found by the dictionary, headers + a few sample rows go to an LLM to map before giving up. Verified working live — headers like `"Who"`, `"Works At"`, `"Reach Via"`, `"Ring Them"` were correctly mapped to `full_name`, `company`, `emails`, `phones` respectively with zero manual `column_map`. Response includes `column_map_source` the same way.
+
+**Rules:**
+- At least `full_name` or `company` must be detected (dictionary, then AI, then reject), or the whole import is rejected with a 400.
+- A row with neither a name nor a company is skipped.
+- Every imported row gets `status="succeeded"`, `model_name="excel-import"`, and `estimated_cost_usd="0.000000"` (unless the AI mapping fallback triggered, which costs a fraction of a cent **once per upload**, not per row).
+- The whole batch is written in one DB transaction — if something fails partway through, nothing from that request is saved.
+
+### Example minimal CSV
+
+```csv
+Full Name,Job Title,Company,Email,Phone,Website
+Jane Doe,VP Sales,Acme Corp,jane.doe@acme.com,+1 555 123 4567,acme.com
+John Smith,CTO,Beta Industries,john@beta.io; john.smith@gmail.com,555-999-1111,beta.io
+```
+
+### Example with unrecognizable headers (AI fallback)
+
+```csv
+Who,Works At,Reach Via,Ring Them
+Priya Nair,Zenith Traders,priya.nair@zenith.co.in,9876543210
+```
+
+### Response (`201`)
+
+```json
+{
+  "success": true,
+  "status": "201",
+  "message": "Bulk cards imported",
+  "data": {
+    "source_file": "cards_clean.csv",
+    "sheet": "cards_clean.csv",
+    "header_row": 1,
+    "column_map": { "full_name": "Full Name", "job_title": "Job Title", "company": "Company", "emails": "Email", "phones": "Phone", "website": "Website" },
+    "column_map_source": "heuristic",
+    "rows_imported": 2,
+    "rows_skipped": 0,
+    "cards": [
+      {
+        "id": 2,
+        "original_filename": "cards_clean.csv",
+        "status": "succeeded",
+        "full_name": "Jane Doe",
+        "job_title": "VP Sales",
+        "company": "Acme Corp",
+        "emails": ["jane.doe@acme.com"],
+        "phones": ["+1 555 123 4567"],
+        "brands": [],
+        "website": "acme.com",
+        "address": "",
+        "linkedin": "",
+        "extras": {},
+        "estimated_cost_usd": "0.000000",
+        "created_at": "2026-08-19T15:32:54.065533+05:30"
+      },
+      {
+        "id": 3,
+        "full_name": "John Smith",
+        "job_title": "CTO",
+        "company": "Beta Industries",
+        "emails": ["john@beta.io", "john.smith@gmail.com"],
+        "phones": ["555-999-1111"],
+        "website": "beta.io"
+      }
+    ]
+  }
+}
+```
+
+Imported cards show up immediately in `GET /api/ai/cards/` and `GET /api/ai/cards/{id}/`, filterable the same way as OCR'd cards (`?company=`, `?name=`, `?q=`).
+
+### Errors
+
+| Status | Cause |
+|---|---|
+| 400 | not `.xlsx`/`.xlsm`/`.csv`/`.tsv`, more than one file, `.xls` (legacy), file over 50MB, empty sheet, no `full_name`/`company` column detected (even after the AI fallback), bad `column_map` JSON |
+| 400 | DB write failure during the batch (rare — reported as "Could not save imported cards") |
