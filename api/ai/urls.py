@@ -2,12 +2,14 @@ from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    AIAttachmentViewSet,
     AIBulkUploadView,
     AIBusinessCardViewSet,
     AICatalogueProductViewSet,
     AICatalogueViewSet,
     AIChatView,
     AIExtractionRunViewSet,
+    NoteViewSet,
 )
 
 router = DefaultRouter()
@@ -15,6 +17,8 @@ router.register('extract', AIExtractionRunViewSet, basename='ai-extract')
 router.register('catalogues', AICatalogueViewSet, basename='ai-catalogues')
 router.register('cards', AIBusinessCardViewSet, basename='ai-cards')
 router.register('products', AICatalogueProductViewSet, basename='ai-products')
+router.register('notes', NoteViewSet, basename='ai-notes')
+router.register('attachments', AIAttachmentViewSet, basename='ai-attachments')
 
 urlpatterns = router.urls + [
     path(

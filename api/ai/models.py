@@ -268,6 +268,151 @@ class AIExtractedProduct(TimeStampedModel):
         ordering = ('page_number', 'id')
 
 
+class Note(models.Model):
+    business_card = models.ForeignKey(
+                AIBusinessCard,
+                on_delete=models.CASCADE,
+                related_name='catalogue_notes_business_card',
+            )
+    catalogue = models.ForeignKey(AICatalogue, on_delete=models.CASCADE, related_name='notes')
+    title = models.CharField(
+        max_length=255,
+    )
+
+    description = models.TextField(
+        blank=True,
+        null=True,
+    )
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_notes",
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    updated_at = models.DateTimeField(
+        auto_now=True,
+    )
+
+    class Meta:
+        db_table = "notes"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return self.title
+
+
+class AIAttachment(models.Model):
+
+    class AttachmentType(models.TextChoices):
+        DOCUMENT = "document", "Document"
+        IMAGE = "image", "Image"
+
+    class DocumentType(models.TextChoices):
+        PDF = "pdf", "PDF"
+        EXCEL = "excel", "Excel"
+        WORD = "word", "Word"
+        POWERPOINT = "powerpoint", "PowerPoint"
+        TEXT = "text", "Text"
+        CSV = "csv", "CSV"
+        OTHER = "other", "Other"
+
+    class ImageType(models.TextChoices):
+        JPG = "jpg", "JPG"
+        JPEG = "jpeg", "JPEG"
+        PNG = "png", "PNG"
+        WEBP = "webp", "WEBP"
+        GIF = "gif", "GIF"
+        SVG = "svg", "SVG"
+        OTHER = "other", "Other"
+
+    note = models.ForeignKey(
+        Note,
+        on_delete=models.CASCADE,
+        related_name="attachments",
+    )
+
+    file = models.FileField(
+        upload_to="catalogue_attachments/",
+    )
+
+    original_filename = models.CharField(
+        max_length=500,
+    )
+
+    attachment_type = models.CharField(
+        max_length=20,
+        choices=AttachmentType.choices,
+    )
+
+    document_type = models.CharField(
+        max_length=20,
+        choices=DocumentType.choices,
+        null=True,
+        blank=True,
+    )
+
+    image_type = models.CharField(
+        max_length=20,
+        choices=ImageType.choices,
+        null=True,
+        blank=True,
+    )
+
+    mime_type = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+    )
+
+    file_size = models.PositiveBigIntegerField(
+        default=0,
+    )
+
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="uploaded_note_attachments",
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    updated_at = models.DateTimeField(
+        auto_now=True,
+    )
+
+    class Meta:
+        db_table = "note_attachments"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(
+                fields=["note", "attachment_type"],
+                name="note_attach_type_idx",
+            ),
+            models.Index(
+                fields=["note", "document_type"],
+                name="note_document_type_idx",
+            ),
+            models.Index(
+                fields=["note", "image_type"],
+                name="note_image_type_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return self.original_filename
+
+
 def ai_card_upload_path(instance, filename):
     return f'ai/cards/{instance.workspace_id}/{filename}'
 

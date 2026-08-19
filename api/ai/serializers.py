@@ -1,12 +1,14 @@
 from rest_framework import serializers
 
 from .models import (
+    AIAttachment,
     AIBusinessCard,
     AICatalogue,
     AICatalogueUpload,
     AIExtractedPage,
     AIExtractedProduct,
     AIExtractionRun,
+    Note,
 )
 from .services.files import (
     MAX_UPLOAD_BYTES,
@@ -405,6 +407,79 @@ class AIChatRequestSerializer(serializers.Serializer):
     message = serializers.CharField(max_length=2000)
     session_id = serializers.IntegerField(required=False, allow_null=True, min_value=1)
     catalogue_id = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+
+
+class AIAttachmentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AIAttachment
+        fields = (
+            'id',
+            'note',
+            'file',
+            'original_filename',
+            'attachment_type',
+            'document_type',
+            'image_type',
+            'mime_type',
+            'file_size',
+            'uploaded_by',
+            'created_at',
+            'updated_at',
+        )
+        read_only_fields = ('id', 'mime_type', 'file_size', 'uploaded_by', 'created_at', 'updated_at')
+
+    def validate(self, attrs):
+        attachment_type = attrs.get('attachment_type') or getattr(self.instance, 'attachment_type', None)
+        if attachment_type == AIAttachment.AttachmentType.DOCUMENT and not (
+            attrs.get('document_type') or getattr(self.instance, 'document_type', None)
+        ):
+            raise serializers.ValidationError({'document_type': 'Required when attachment_type is document.'})
+        if attachment_type == AIAttachment.AttachmentType.IMAGE and not (
+            attrs.get('image_type') or getattr(self.instance, 'image_type', None)
+        ):
+            raise serializers.ValidationError({'image_type': 'Required when attachment_type is image.'})
+        return attrs
+
+
+class NoteSerializer(serializers.ModelSerializer):
+    attachments = AIAttachmentSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Note
+        fields = (
+            'id',
+            'business_card',
+            'catalogue',
+            'title',
+            'description',
+            'created_by',
+            'attachments',
+            'created_at',
+            'updated_at',
+        )
+        read_only_fields = ('id', 'created_by', 'attachments', 'created_at', 'updated_at')
+
+
+class NoteListSerializer(serializers.ModelSerializer):
+    attachments_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Note
+        fields = (
+            'id',
+            'business_card',
+            'catalogue',
+            'title',
+            'description',
+            'created_by',
+            'attachments_count',
+            'created_at',
+            'updated_at',
+        )
+        read_only_fields = fields
+
+    def get_attachments_count(self, obj):
+        return obj.attachments.count()
 
 
 class AIBusinessCardListSerializer(serializers.ModelSerializer):

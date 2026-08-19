@@ -14,6 +14,7 @@ from api.common.pagination import StandardPagination
 from api.common.responses import error_envelope, success_envelope
 
 from .models import (
+    AIAttachment,
     AIBusinessCard,
     AICatalogue,
     AICatalogueUpload,
@@ -21,9 +22,11 @@ from .models import (
     AIChatTurn,
     AIExtractedProduct,
     AIExtractionRun,
+    Note,
 )
 from .workspace import get_default_workspace, optional_user
 from .serializers import (
+    AIAttachmentSerializer,
     AIBulkUploadRequestSerializer,
     AIBusinessCardListSerializer,
     AIBusinessCardSerializer,
@@ -36,6 +39,8 @@ from .serializers import (
     AIExtractRequestSerializer,
     AIExtractionRunListSerializer,
     AIExtractionRunSerializer,
+    NoteListSerializer,
+    NoteSerializer,
 )
 from .services.card_extract import extract_business_card
 from .services.chat import answer_question
@@ -331,6 +336,72 @@ class AICatalogueProductViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet, mix
         if sku:
             qs = qs.filter(code_or_sku__icontains=sku)
         return qs
+
+
+class NoteViewSet(AIOpenViewSetMixin, viewsets.ModelViewSet):
+    queryset = Note.objects.select_related('business_card', 'catalogue', 'created_by').prefetch_related('attachments').all()
+    serializer_class = NoteSerializer
+    http_method_names = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options']
+
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return NoteListSerializer
+        return NoteSerializer
+
+    def get_queryset(self):
+        qs = Note.objects.select_related('business_card', 'catalogue', 'created_by').prefetch_related('attachments')
+        business_card = self.request.query_params.get('business_card')
+        if business_card:
+            qs = qs.filter(business_card_id=business_card)
+        catalogue = self.request.query_params.get('catalogue')
+        if catalogue:
+            qs = qs.filter(catalogue_id=catalogue)
+        return qs
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=optional_user(self.request))
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        instance.delete()
+        return success_envelope(None, 'Deleted', 204)
+
+
+class AIAttachmentViewSet(AIOpenViewSetMixin, viewsets.ModelViewSet):
+    queryset = AIAttachment.objects.select_related('note', 'uploaded_by').all()
+    serializer_class = AIAttachmentSerializer
+    parser_classes = [MultiPartParser, FormParser]
+    http_method_names = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options']
+
+    def get_queryset(self):
+        qs = AIAttachment.objects.select_related('note', 'uploaded_by')
+        note = self.request.query_params.get('note')
+        if note:
+            qs = qs.filter(note_id=note)
+        return qs
+
+    def perform_create(self, serializer):
+        file_obj = serializer.validated_data.get('file')
+        serializer.save(
+            uploaded_by=optional_user(self.request),
+            mime_type=getattr(file_obj, 'content_type', '') or '',
+            file_size=getattr(file_obj, 'size', 0) or 0,
+        )
+
+    def perform_update(self, serializer):
+        file_obj = serializer.validated_data.get('file')
+        if file_obj is not None:
+            serializer.save(
+                mime_type=getattr(file_obj, 'content_type', '') or '',
+                file_size=getattr(file_obj, 'size', 0) or 0,
+            )
+        else:
+            serializer.save()
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        instance.delete()
+        return success_envelope(None, 'Deleted', 204)
 
 
 class AIBusinessCardViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
