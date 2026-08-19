@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from django.db.models import Q
 from django.utils import timezone
-from rest_framework import viewsets
+from rest_framework import mixins, viewsets
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny
 
@@ -19,6 +19,7 @@ from .serializers import (
     AICatalogueListSerializer,
     AICatalogueSchemaSerializer,
     AIExtractedProductSerializer,
+    AIExtractedProductWriteSerializer,
     AIExtractRequestSerializer,
     AIExtractionRunListSerializer,
     AIExtractionRunSerializer,
@@ -49,6 +50,30 @@ class AIOpenViewSetMixin:
         serializer = self.get_serializer(instance)
         return success_envelope(serializer.data)
 
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        instance = serializer.save()
+        return success_envelope(self.get_serializer(instance).data, 'Created', 201)
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        instance = serializer.save()
+        return success_envelope(self.get_serializer(instance).data, 'Updated')
+
+    def partial_update(self, request, *args, **kwargs):
+        kwargs['partial'] = True
+        return self.update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        instance.is_current = False
+        instance.save(update_fields=['is_current'])
+        return success_envelope(None, 'Deleted', 204)
+
 
 class AIExtractionRunViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
     queryset = AIExtractionRun.objects.select_related('upload').all()
@@ -66,6 +91,7 @@ class AIExtractionRunViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
         uploaded = data['file']
+        card = AIBusinessCard.objects.filter(id = data['card']).first()
 
         max_pages = int(os.environ.get('AI_MAX_PAGES_PER_REQUEST', '30'))
         model_tier = data.get('model_tier') or AIExtractionRun.TIER_HIGH
@@ -75,6 +101,7 @@ class AIExtractionRunViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
         workspace = get_default_workspace()
         user = optional_user(request)
         upload = AICatalogueUpload.objects.create(
+            business_card = card,
             workspace=workspace,
             file=uploaded,
             original_filename=uploaded.name,
@@ -100,6 +127,7 @@ class AIExtractionRunViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
         )
 
         run = AIExtractionRun.objects.create(
+            business_card = card,
             workspace=workspace,
             upload=upload,
             status=AIExtractionRun.STATUS_RUNNING,
@@ -142,7 +170,7 @@ class AIExtractionRunViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
             run.estimated_cost_usd = costing['estimated_cost_usd']
             run.cost_breakdown = costing['breakdown']
             run.save()
-            persist_run_to_schema(run, result)
+            persist_run_to_schema(run, result, card)
         except Exception as exc:  # noqa: BLE001
             run.status = AIExtractionRun.STATUS_FAILED
             run.finished_at = timezone.now()
@@ -172,21 +200,35 @@ class AIExtractionRunViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
 
 class AICatalogueViewSet(AIOpenViewSetMixin, viewsets.ReadOnlyModelViewSet):
     queryset = AICatalogue.objects.all()
-    serializer_class = AICatalogueListSerializer
+    serializer_class = AICatalogueSchemaSerializer
     http_method_names = ['get', 'head', 'options']
     search_fields = ('title', 'brand', 'source_filename')
+
+    def get_queryset(self):
+        qs = AICatalogue.objects.all()
+        business_card = self.request.query_params.get('business_card')
+        if business_card:
+            qs = qs.filter(business_card_id=business_card)
+        return qs
 
     def get_serializer_class(self):
         if self.action == 'retrieve':
             return AICatalogueSchemaSerializer
-        return AICatalogueListSerializer
+        return AICatalogueSchemaSerializer
 
 
-class AICatalogueProductViewSet(AIOpenViewSetMixin, viewsets.ReadOnlyModelViewSet):
+class AICatalogueProductViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet, mixins.ListModelMixin,
+                                 mixins.RetrieveModelMixin, mixins.CreateModelMixin, mixins.UpdateModelMixin,
+                                 mixins.DestroyModelMixin):
     queryset = AIExtractedProduct.objects.select_related('catalogue').all()
     serializer_class = AIExtractedProductSerializer
-    http_method_names = ['get', 'head', 'options']
+    http_method_names = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options']
     search_fields = ('product_name', 'code_or_sku', 'series', 'search_text')
+
+    def get_serializer_class(self):
+        if self.action in ('create', 'update', 'delete', 'partial_update'):
+            return AIExtractedProductWriteSerializer
+        return AIExtractedProductSerializer
 
     def get_queryset(self):
         qs = AIExtractedProduct.objects.filter(is_current=True).select_related('catalogue')
@@ -207,6 +249,7 @@ class AIBusinessCardViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
     serializer_class = AIBusinessCardSerializer
     parser_classes = [MultiPartParser, FormParser]
     http_method_names = ['get', 'post', 'head', 'options']
+    pagination_class = StandardPagination
 
     def get_serializer_class(self):
         if self.action == 'list':
@@ -294,3 +337,5 @@ class AIBusinessCardViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
             return error_envelope(str(exc), status_code, data=AIBusinessCardSerializer(card).data)
 
         return success_envelope(AIBusinessCardSerializer(card).data, 'Card extracted', 201)
+
+

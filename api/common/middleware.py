@@ -5,8 +5,14 @@ from api.workspaces.models import WorkspaceMembership
 
 def _resolve_workspace_context(request):
     workspace_id = request.headers.get('X-Workspace-Id') or request.META.get('HTTP_X_WORKSPACE_ID')
+
+    if not workspace_id and getattr(request, 'auth', None) is not None:
+        payload = getattr(request.auth, 'payload', None) or {}
+        workspace_id = payload.get('workspace_id') or payload.get('workspace')
+
     if not workspace_id or not request.user.is_authenticated:
         return None, None
+
     try:
         membership = WorkspaceMembership.objects.select_related('workspace').get(
             workspace_id=workspace_id,

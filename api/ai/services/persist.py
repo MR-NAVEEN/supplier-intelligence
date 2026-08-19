@@ -2,7 +2,7 @@ import os
 import re
 from decimal import Decimal, InvalidOperation
 
-from api.ai.models import AICatalogue, AIExtractedPage, AIExtractedProduct
+from api.ai.models import AICatalogue, AIExtractedPage, AIExtractedProduct, AIBusinessCard
 
 
 def _title_from_filename(filename):
@@ -31,9 +31,10 @@ def _search_text(name, sku, series, description, attributes):
     return ' '.join(p for p in parts if p).strip()
 
 
-def get_or_create_catalogue(workspace, filename, total_pages, user):
+def get_or_create_catalogue(workspace, filename, total_pages, user, card):
     filename = filename or 'catalogue.pdf'
     catalogue, _created = AICatalogue.objects.get_or_create(
+        business_card = card,
         workspace=workspace,
         source_filename=filename,
         defaults={
@@ -49,12 +50,12 @@ def get_or_create_catalogue(workspace, filename, total_pages, user):
     return catalogue
 
 
-def persist_run_to_schema(run, result):
+def persist_run_to_schema(run, result, card):
     """Flatten extract JSON into catalogue / page / product rows. Does not change run.result_json."""
     upload = run.upload
     filename = upload.original_filename if upload else (result or {}).get('source_file') or 'catalogue.pdf'
     total_pages = (result or {}).get('total_pages_in_pdf') or (upload.total_pages if upload else 0)
-    catalogue = get_or_create_catalogue(run.workspace, filename, total_pages, run.created_by)
+    catalogue = get_or_create_catalogue(run.workspace, filename, total_pages, run.created_by, card)
 
     if upload and upload.catalogue_id != catalogue.id:
         upload.catalogue = catalogue
@@ -78,6 +79,7 @@ def persist_run_to_schema(run, result):
             continue
         page = AIExtractedPage.objects.create(
             catalogue=catalogue,
+            business_card = card,
             run=run,
             page_number=page_number,
             page_type=page_data.get('page_type') or '',
@@ -94,6 +96,7 @@ def persist_run_to_schema(run, result):
             attrs = prod.get('attributes') if isinstance(prod.get('attributes'), dict) else {}
             description = prod.get('description') or ''
             AIExtractedProduct.objects.create(
+                business_card = card,
                 catalogue=catalogue,
                 run=run,
                 page=page,
@@ -111,5 +114,6 @@ def persist_run_to_schema(run, result):
             )
 
     catalogue.current_run = run
+    catalogue.created_by = run.created_by
     catalogue.save(update_fields=['current_run', 'updated_at'])
     return catalogue

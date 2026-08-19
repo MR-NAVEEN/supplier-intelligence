@@ -12,6 +12,7 @@ router = DefaultRouter()
 router.register('extract', AIExtractionRunViewSet, basename='ai-extract')
 router.register('catalogues', AICatalogueViewSet, basename='ai-catalogues')
 router.register('cards', AIBusinessCardViewSet, basename='ai-cards')
+router.register('products', AICatalogueProductViewSet, basename='ai-products')
 
 urlpatterns = router.urls + [
     path(

@@ -3,8 +3,8 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
-from rest_framework_simplejwt.tokens import RefreshToken
 
 from api.common.responses import success_envelope
 from api.workspaces.models import WorkspaceMembership
@@ -17,11 +17,68 @@ User = get_user_model()
 class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
     username_field = User.EMAIL_FIELD
 
+    def _get_workspace_membership(self, user, request_data):
+        workspace_id = request_data.get('workspace_id') or request_data.get('workspaceId')
+        if workspace_id:
+            membership = WorkspaceMembership.objects.select_related('workspace').filter(
+                user=user,
+                workspace_id=workspace_id,
+            ).first()
+            if membership:
+                return membership
+
+        return (
+            WorkspaceMembership.objects.select_related('workspace')
+            .filter(user=user)
+            .order_by('workspace__name')
+            .first()
+        )
+
     @classmethod
     def get_token(cls, user):
         token = super().get_token(user)
         token['email'] = user.email
+        membership = WorkspaceMembership.objects.filter(user=user).order_by('workspace__name').first()
+        if membership:
+            token['workspace_id'] = str(membership.workspace_id)
+            token['workspace_role'] = membership.role
+            token['workspace_name'] = membership.workspace.name
+            token['workspace_slug'] = membership.workspace.slug
+            token['workspace'] = str(membership.workspace_id)
         return token
+
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        user = self.user
+        membership = self._get_workspace_membership(user, self.context['request'].data)
+
+        if membership:
+            access_token = AccessToken(data['access'])
+            refresh_token = RefreshToken(data['refresh'])
+
+            access_token['workspace_id'] = str(membership.workspace_id)
+            access_token['workspace_role'] = membership.role
+            access_token['workspace_name'] = membership.workspace.name
+            access_token['workspace_slug'] = membership.workspace.slug
+
+            refresh_token['workspace_id'] = str(membership.workspace_id)
+            refresh_token['workspace_role'] = membership.role
+            refresh_token['workspace_name'] = membership.workspace.name
+            refresh_token['workspace_slug'] = membership.workspace.slug
+
+            data['access'] = str(access_token)
+            data['refresh'] = str(refresh_token)
+            data['workspace'] = {
+                'id': str(membership.workspace_id),
+                'name': membership.workspace.name,
+                'slug': membership.workspace.slug,
+                'role': membership.role,
+            }
+        else:
+            data['workspace'] = None
+
+        data['user'] = UserSerializer(user).data
+        return data
 
 
 class SignupView(APIView):
@@ -53,12 +110,6 @@ class SignupView(APIView):
 class EmailTokenObtainPairView(TokenObtainPairView):
     serializer_class = EmailTokenObtainPairSerializer
     permission_classes = [permissions.AllowAny]
-
-    def post(self, request, *args, **kwargs):
-        response = super().post(request, *args, **kwargs)
-        if response.status_code == 200:
-            return success_envelope(response.data, 'Login successful')
-        return response
 
 
 class TokenRefreshEnvelopeView(TokenRefreshView):

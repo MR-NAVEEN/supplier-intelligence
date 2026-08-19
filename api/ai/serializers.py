@@ -14,6 +14,7 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
 class AIExtractRequestSerializer(serializers.Serializer):
     file = serializers.FileField()
+    card = serializers.CharField(required=True)
     page_mode = serializers.ChoiceField(choices=AIExtractionRun.PAGE_MODE_CHOICES)
     page_count = serializers.IntegerField(required=False, allow_null=True, min_value=1)
     page_range = serializers.CharField(required=False, allow_blank=True, max_length=128)
@@ -36,6 +37,9 @@ class AIExtractRequestSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         mode = attrs.get('page_mode')
+        card = AIBusinessCard.objects.filter(id = attrs.get('card')).first()
+        if not card:
+            raise serializers.ValidationError("give me the valid card id")
         if mode == AIExtractionRun.MODE_FIRST_N and not attrs.get('page_count'):
             raise serializers.ValidationError({'page_count': 'Required when page_mode is first_n.'})
         if mode == AIExtractionRun.MODE_RANGE and not (attrs.get('page_range') or '').strip():
@@ -135,6 +139,30 @@ class AIExtractedProductSerializer(serializers.ModelSerializer):
             'created_at',
         )
         read_only_fields = fields
+
+
+class AIExtractedProductWriteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AIExtractedProduct
+        fields = (
+            'id',
+            'business_card',
+            'catalogue',
+            'run',
+            'page',
+            'page_number',
+            'product_name',
+            'code_or_sku',
+            'price',
+            'price_raw',
+            'currency',
+            'description',
+            'series',
+            'attributes',
+            'is_current',
+            'created_at',
+        )
+        read_only_fields = ('id', 'created_at')
 
 
 class AIExtractedPageSerializer(serializers.ModelSerializer):
@@ -329,6 +357,11 @@ class AIBusinessCardListSerializer(serializers.ModelSerializer):
             'emails',
             'phones',
             'duration_ms',
+            'website',
+            'address',
+            'linkedin',
+            'extras',
+            'extra_text',
             'estimated_cost_usd',
             'created_at',
         )
