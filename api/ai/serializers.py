@@ -91,6 +91,24 @@ class AIBulkUploadRequestSerializer(serializers.Serializer):
         return value
 
 
+class AICardBulkUploadRequestSerializer(serializers.Serializer):
+    file = serializers.FileField()
+    sheet = serializers.CharField(required=False, allow_blank=True, max_length=128)
+    header_row = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    column_map = serializers.CharField(required=False, allow_blank=True)
+    max_rows = serializers.IntegerField(required=False, allow_null=True, min_value=1, max_value=20000)
+
+    def validate_file(self, value):
+        if upload_too_large(value):
+            raise serializers.ValidationError('File is larger than 50 MB.')
+        kind = classify_upload(value)
+        if kind == 'xls':
+            raise serializers.ValidationError('Legacy .xls is not supported. Save as .xlsx or CSV.')
+        if kind != 'spreadsheet':
+            raise serializers.ValidationError('Upload a .xlsx, .xlsm, .csv, or .tsv file.')
+        return value
+
+
 class AICatalogueUploadSerializer(serializers.ModelSerializer):
     class Meta:
         model = AICatalogueUpload

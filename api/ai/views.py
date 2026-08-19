@@ -2,10 +2,10 @@ import os
 from decimal import Decimal
 
 from django.core.files.storage import default_storage
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import mixins, viewsets
-from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
@@ -27,6 +27,7 @@ from .serializers import (
     AIBulkUploadRequestSerializer,
     AIBusinessCardListSerializer,
     AIBusinessCardSerializer,
+    AICardBulkUploadRequestSerializer,
     AICardExtractRequestSerializer,
     AICatalogueListSerializer,
     AICatalogueSchemaSerializer,
@@ -38,6 +39,8 @@ from .serializers import (
     AIExtractionRunSerializer,
 )
 from .services.card_extract import extract_business_card
+from .services.card_import import import_card_spreadsheet
+from .services.card_import import parse_user_column_map as parse_user_card_column_map
 from .services.chat import answer_question
 from .services.costing import estimate_cost
 from .services.excel_import import import_spreadsheet, parse_user_column_map
@@ -579,3 +582,107 @@ class AIBulkUploadView(APIView):
             return _succeed_run(run, extracted, 0)
         except Exception as exc:  # noqa: BLE001
             return _fail_run(run, exc)
+
+
+class AICardBulkUploadView(APIView):
+    """Bulk-import business card contacts from a spreadsheet — no OCR, no AI cost
+    for the import itself (only used as a fallback if column headers are unrecognized)."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, *args, **kwargs):
+        uploads = collect_uploads(request)
+        if not uploads:
+            return error_envelope('Upload one .xlsx, .xlsm, .csv, or .tsv file.', 400)
+        if len(uploads) > 1:
+            return error_envelope('Upload one spreadsheet per request.', 400)
+        serializer = AICardBulkUploadRequestSerializer(
+            data={
+                'file': uploads[0],
+                'sheet': request.data.get('sheet') or '',
+                'header_row': request.data.get('header_row') or None,
+                'column_map': request.data.get('column_map') or '',
+                'max_rows': request.data.get('max_rows') or None,
+            }
+        )
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        uploaded = data['file']
+        try:
+            column_map = parse_user_card_column_map(data.get('column_map'))
+        except ValueError as exc:
+            return error_envelope(str(exc), 400)
+
+        workspace = get_default_workspace()
+        user = optional_user(request)
+        max_rows = data.get('max_rows') or int(os.environ.get('AI_MAX_EXCEL_ROWS', '5000'))
+
+        stored_name = default_storage.save(
+            f'ai/cards_bulk/{workspace.id}/{uploaded.name}', uploaded
+        )
+        stored_path = default_storage.path(stored_name)
+
+        try:
+            parsed = import_card_spreadsheet(
+                stored_path,
+                sheet=data.get('sheet') or None,
+                column_map=column_map,
+                header_row=data.get('header_row'),
+                max_rows=max_rows,
+            )
+        except ValueError as exc:
+            return error_envelope(str(exc), 400)
+        except Exception as exc:  # noqa: BLE001
+            return error_envelope(f'Could not read spreadsheet: {exc}', 400)
+
+        now = timezone.now()
+        created = []
+        try:
+            with transaction.atomic():
+                for row in parsed['cards']:
+                    card = AIBusinessCard.objects.create(
+                        workspace=workspace,
+                        image=None,
+                        original_filename=uploaded.name,
+                        content_type=getattr(uploaded, 'content_type', '') or '',
+                        file_size_bytes=0,
+                        status=AIBusinessCard.STATUS_SUCCEEDED,
+                        full_name=row['full_name'],
+                        job_title=row['job_title'],
+                        company=row['company'],
+                        emails=row['emails'],
+                        phones=row['phones'],
+                        website=row['website'],
+                        address=row['address'],
+                        linkedin=row['linkedin'],
+                        extras=row['extras'],
+                        source_files=[],
+                        result_json=row,
+                        model_tier=AIExtractionRun.TIER_BUDGET,
+                        model_name='excel-import',
+                        started_at=now,
+                        finished_at=now,
+                        duration_ms=0,
+                        estimated_cost_usd=0,
+                        created_by=user,
+                    )
+                    created.append(card)
+        except Exception as exc:  # noqa: BLE001
+            return error_envelope(f'Could not save imported cards: {exc}', 400)
+
+        return success_envelope(
+            {
+                'source_file': parsed['source_file'],
+                'sheet': parsed['sheet'],
+                'header_row': parsed['header_row'],
+                'column_map': parsed['column_map'],
+                'column_map_source': parsed['column_map_source'],
+                'rows_imported': parsed['rows_imported'],
+                'rows_skipped': parsed['rows_skipped'],
+                'cards': AIBusinessCardListSerializer(created, many=True).data,
+            },
+            'Bulk cards imported',
+            201,
+        )

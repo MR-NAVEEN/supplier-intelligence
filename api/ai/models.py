@@ -19,7 +19,7 @@ class AIBusinessCard(WorkspaceScopedModel):
         (STATUS_FAILED, 'Failed'),
     ]
 
-    image = models.FileField(upload_to=ai_card_upload_path)
+    image = models.FileField(upload_to=ai_card_upload_path, null=True, blank=True)
     original_filename = models.CharField(max_length=255)
     content_type = models.CharField(max_length=128, blank=True)
     file_size_bytes = models.BigIntegerField(default=0)

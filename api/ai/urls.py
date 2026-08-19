@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     AIBulkUploadView,
+    AICardBulkUploadView,
     AIBusinessCardViewSet,
     AICatalogueProductViewSet,
     AICatalogueViewSet,
@@ -16,7 +17,9 @@ router.register('catalogues', AICatalogueViewSet, basename='ai-catalogues')
 router.register('cards', AIBusinessCardViewSet, basename='ai-cards')
 router.register('products', AICatalogueProductViewSet, basename='ai-products')
 
-urlpatterns = router.urls + [
+# Explicit paths must come before router.urls: the router's cards/<pk>/ pattern
+# would otherwise swallow "bulk-upload" as if it were a business card id.
+urlpatterns = [
     path(
         'catalogues/<int:catalogue_pk>/products/',
         AICatalogueProductViewSet.as_view({'get': 'list'}),
@@ -24,4 +27,5 @@ urlpatterns = router.urls + [
     ),
     path('chat/', AIChatView.as_view(), name='ai-chat'),
     path('bulk-upload/', AIBulkUploadView.as_view(), name='ai-bulk-upload'),
-]
+    path('cards/bulk-upload/', AICardBulkUploadView.as_view(), name='ai-cards-bulk-upload'),
+] + router.urls
