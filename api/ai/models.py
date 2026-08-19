@@ -19,6 +19,13 @@ class AIBusinessCard(WorkspaceScopedModel):
         (STATUS_FAILED, 'Failed'),
     ]
 
+    supplier = models.ForeignKey(
+        'suppliers.Supplier',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='ai_business_cards',
+    )
     image = models.FileField(upload_to=ai_card_upload_path, null=True, blank=True)
     original_filename = models.CharField(max_length=255)
     content_type = models.CharField(max_length=128, blank=True)
@@ -67,6 +74,13 @@ def ai_catalogue_upload_path(instance, filename):
 
 
 class AICatalogue(WorkspaceScopedModel):
+    supplier = models.ForeignKey(
+        'suppliers.Supplier',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='ai_catalogues',
+    )
     business_card = models.ForeignKey(
         AIBusinessCard,
         on_delete=models.SET_NULL,
@@ -94,13 +108,20 @@ class AICatalogue(WorkspaceScopedModel):
 
     class Meta:
         ordering = ('-created_at',)
-        unique_together = ('workspace', 'source_filename')
+        unique_together = ('workspace', 'supplier', 'source_filename')
 
     def __str__(self):
         return self.title
 
 
 class AICatalogueUpload(WorkspaceScopedModel):
+    supplier = models.ForeignKey(
+        'suppliers.Supplier',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='ai_catalogue_uploads',
+    )
     business_card = models.ForeignKey(
         AIBusinessCard,
         on_delete=models.SET_NULL,
@@ -164,6 +185,13 @@ class AIExtractionRun(TimeStampedModel):
         (TIER_HIGH, 'High accuracy'),
     ]
 
+    supplier = models.ForeignKey(
+        'suppliers.Supplier',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='ai_extraction_runs',
+    )
     business_card = models.ForeignKey(
         AIBusinessCard,
         on_delete=models.SET_NULL,
@@ -224,6 +252,13 @@ class AIExtractionRun(TimeStampedModel):
 
 
 class AIExtractedPage(TimeStampedModel):
+    supplier = models.ForeignKey(
+        'suppliers.Supplier',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='ai_extracted_pages',
+    )
     business_card = models.ForeignKey(
         AIBusinessCard,
         on_delete=models.SET_NULL,
@@ -246,6 +281,13 @@ class AIExtractedPage(TimeStampedModel):
 
 
 class AIExtractedProduct(TimeStampedModel):
+    supplier = models.ForeignKey(
+        'suppliers.Supplier',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='ai_extracted_products',
+    )
     business_card = models.ForeignKey(
         AIBusinessCard,
         on_delete=models.SET_NULL,

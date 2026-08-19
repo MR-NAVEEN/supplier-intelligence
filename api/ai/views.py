@@ -12,6 +12,7 @@ from rest_framework.views import APIView
 
 from api.common.pagination import StandardPagination
 from api.common.responses import error_envelope, success_envelope
+from api.suppliers.models import Supplier
 
 from .models import (
     AIAttachment,
@@ -55,6 +56,20 @@ from .services.page_selection import resolve_pages
 from .services.persist import persist_run_to_schema
 
 
+def resolve_supplier(url_kwargs, data, required=True):
+    """supplier_id can come from the URL (/api/ai/suppliers/<id>/...) or the request body.
+    Returns (supplier, error_response). error_response is None on success."""
+    supplier_id = url_kwargs.get('supplier_id') or (data.get('supplier') if data else None)
+    if not supplier_id:
+        if required:
+            return None, error_envelope('supplier is required.', 400, data={'supplier': 'This field is required.'})
+        return None, None
+    supplier = Supplier.objects.filter(id=supplier_id).first()
+    if supplier is None:
+        return None, error_envelope('No supplier found for that id.', 400, data={'supplier': 'Invalid supplier id.'})
+    return supplier, None
+
+
 def collect_uploads(request, keys=('file', 'files', 'files[]')):
     uploads = []
     seen = set()
@@ -89,7 +104,7 @@ def _fail_run(run, exc):
     return error_envelope(message, status_code, data=AIExtractionRunSerializer(run).data)
 
 
-def _succeed_run(run, extracted, pages_billed, card=None):
+def _succeed_run(run, extracted, pages_billed, card=None, supplier=None):
     finished = timezone.now()
     duration_ms = int((finished - run.started_at).total_seconds() * 1000)
     result = extracted['result']
@@ -114,7 +129,7 @@ def _succeed_run(run, extracted, pages_billed, card=None):
     run.estimated_cost_usd = costing['estimated_cost_usd']
     run.cost_breakdown = costing['breakdown']
     run.save()
-    persist_run_to_schema(run, result, card)
+    persist_run_to_schema(run, result, card, supplier)
     return success_envelope(AIExtractionRunSerializer(run).data, 'Extraction completed', 201)
 
 
@@ -173,6 +188,13 @@ class AIExtractionRunViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
             return AIExtractionRunListSerializer
         return AIExtractionRunSerializer
 
+    def get_queryset(self):
+        qs = AIExtractionRun.objects.select_related('upload').all()
+        supplier_id = self.kwargs.get('supplier_id') or self.request.query_params.get('supplier')
+        if supplier_id:
+            qs = qs.filter(supplier_id=supplier_id)
+        return qs
+
     def create(self, request, *args, **kwargs):
         uploads = collect_uploads(request)
         if not uploads:
@@ -181,6 +203,7 @@ class AIExtractionRunViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
             data={
                 'files': uploads,
                 'card': request.data.get('card') or None,
+                'supplier': self.kwargs.get('supplier_id') or request.data.get('supplier') or None,
                 'page_mode': request.data.get('page_mode') or None,
                 'page_count': request.data.get('page_count') or None,
                 'page_range': request.data.get('page_range') or '',
@@ -190,11 +213,12 @@ class AIExtractionRunViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
         )
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        card = None
-        if data.get('card'):
-            card = AIBusinessCard.objects.filter(id=data['card']).first()
-            if card is None:
-                return error_envelope('No business card found for that card id.', 400)
+        supplier, err = resolve_supplier(self.kwargs, data)
+        if err:
+            return err
+        card = AIBusinessCard.objects.filter(id=data['card']).first()
+        if card is None:
+            return error_envelope('No business card found for that card id.', 400)
         uploads = data['files']
         kind = classify_upload(uploads[0])
 
@@ -207,6 +231,7 @@ class AIExtractionRunViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
         first = uploads[0]
         upload = AICatalogueUpload.objects.create(
             business_card = card,
+            supplier=supplier,
             workspace=workspace,
             file=first,
             original_filename=', '.join(item.name for item in uploads),
@@ -241,6 +266,7 @@ class AIExtractionRunViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
 
         run = AIExtractionRun.objects.create(
             business_card = card,
+            supplier=supplier,
             workspace=workspace,
             upload=upload,
             status=AIExtractionRun.STATUS_RUNNING,
@@ -267,7 +293,7 @@ class AIExtractionRunViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
                     )
                     image_paths.append(default_storage.path(stored))
                 extracted = extract_catalogue_from_images(image_paths, pages, model_name)
-            return _succeed_run(run, extracted, len(pages), card=card)
+            return _succeed_run(run, extracted, len(pages), card=card, supplier=supplier)
         except Exception as exc:  # noqa: BLE001
             return _fail_run(run, exc)
 
@@ -283,6 +309,9 @@ class AICatalogueViewSet(AIOpenViewSetMixin, viewsets.ReadOnlyModelViewSet):
         business_card = self.request.query_params.get('business_card')
         if business_card:
             qs = qs.filter(business_card_id=business_card)
+        supplier_id = self.kwargs.get('supplier_id') or self.request.query_params.get('supplier')
+        if supplier_id:
+            qs = qs.filter(supplier_id=supplier_id)
         return qs
 
     def get_serializer_class(self):
@@ -309,6 +338,9 @@ class AICatalogueProductViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet, mix
         catalogue_id = self.kwargs.get('catalogue_pk')
         if catalogue_id:
             qs = qs.filter(catalogue_id=catalogue_id)
+        supplier_id = self.kwargs.get('supplier_id') or self.request.query_params.get('supplier')
+        if supplier_id:
+            qs = qs.filter(supplier_id=supplier_id)
         page_number = self.request.query_params.get('page_number')
         if page_number:
             qs = qs.filter(page_number=page_number)
@@ -398,6 +430,9 @@ class AIBusinessCardViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
 
     def get_queryset(self):
         qs = AIBusinessCard.objects.all()
+        supplier_id = self.kwargs.get('supplier_id') or self.request.query_params.get('supplier')
+        if supplier_id:
+            qs = qs.filter(supplier_id=supplier_id)
         company = self.request.query_params.get('company')
         if company:
             qs = qs.filter(company__icontains=company)
@@ -432,11 +467,15 @@ class AIBusinessCardViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
         serializer = AICardExtractRequestSerializer(
             data={
                 'files': uploads,
+                'supplier': self.kwargs.get('supplier_id') or request.data.get('supplier') or None,
                 'model_tier': request.data.get('model_tier') or AIExtractionRun.TIER_HIGH,
             }
         )
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+        supplier, err = resolve_supplier(self.kwargs, data)
+        if err:
+            return err
         uploads = data['files']
         model_tier = data.get('model_tier') or AIExtractionRun.TIER_HIGH
         model_name = MODEL_TIERS.get(model_tier, MODEL_TIERS['high_accuracy'])
@@ -454,6 +493,7 @@ class AIBusinessCardViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
 
         card = AIBusinessCard.objects.create(
             workspace=workspace,
+            supplier=supplier,
             image=first,
             original_filename=', '.join(item.name for item in uploads),
             content_type=getattr(first, 'content_type', '') or '',
@@ -579,6 +619,7 @@ class AIBulkUploadView(APIView):
         serializer = AIBulkUploadRequestSerializer(
             data={
                 'file': uploads[0],
+                'supplier': self.kwargs.get('supplier_id') or request.data.get('supplier') or None,
                 'sheet': request.data.get('sheet') or '',
                 'header_row': request.data.get('header_row') or None,
                 'column_map': request.data.get('column_map') or '',
@@ -587,6 +628,9 @@ class AIBulkUploadView(APIView):
         )
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+        supplier, err = resolve_supplier(self.kwargs, data)
+        if err:
+            return err
         uploaded = data['file']
         try:
             column_map = parse_user_column_map(data.get('column_map'))
@@ -598,6 +642,7 @@ class AIBulkUploadView(APIView):
         max_rows = data.get('max_rows') or int(os.environ.get('AI_MAX_EXCEL_ROWS', '5000'))
         upload = AICatalogueUpload.objects.create(
             workspace=workspace,
+            supplier=supplier,
             file=uploaded,
             original_filename=uploaded.name,
             file_size_bytes=getattr(uploaded, 'size', 0) or 0,
@@ -606,6 +651,7 @@ class AIBulkUploadView(APIView):
         )
         run = AIExtractionRun.objects.create(
             workspace=workspace,
+            supplier=supplier,
             upload=upload,
             status=AIExtractionRun.STATUS_RUNNING,
             page_mode=AIExtractionRun.MODE_FULL,
@@ -627,7 +673,7 @@ class AIBulkUploadView(APIView):
             run.pages_requested = pages
             upload.total_pages = extracted['result'].get('total_pages_in_pdf') or 1
             upload.save(update_fields=['total_pages', 'updated_at'])
-            return _succeed_run(run, extracted, 0)
+            return _succeed_run(run, extracted, 0, supplier=supplier)
         except Exception as exc:  # noqa: BLE001
             return _fail_run(run, exc)
 
@@ -649,6 +695,7 @@ class AICardBulkUploadView(APIView):
         serializer = AICardBulkUploadRequestSerializer(
             data={
                 'file': uploads[0],
+                'supplier': self.kwargs.get('supplier_id') or request.data.get('supplier') or None,
                 'sheet': request.data.get('sheet') or '',
                 'header_row': request.data.get('header_row') or None,
                 'column_map': request.data.get('column_map') or '',
@@ -657,6 +704,9 @@ class AICardBulkUploadView(APIView):
         )
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+        supplier, err = resolve_supplier(self.kwargs, data)
+        if err:
+            return err
         uploaded = data['file']
         try:
             column_map = parse_user_card_column_map(data.get('column_map'))
@@ -692,6 +742,7 @@ class AICardBulkUploadView(APIView):
                 for row in parsed['cards']:
                     card = AIBusinessCard.objects.create(
                         workspace=workspace,
+                        supplier=supplier,
                         image=None,
                         original_filename=uploaded.name,
                         content_type=getattr(uploaded, 'content_type', '') or '',

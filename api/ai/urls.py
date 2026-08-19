@@ -32,4 +32,53 @@ urlpatterns = [
     path('chat/', AIChatView.as_view(), name='ai-chat'),
     path('bulk-upload/', AIBulkUploadView.as_view(), name='ai-bulk-upload'),
     path('cards/bulk-upload/', AICardBulkUploadView.as_view(), name='ai-cards-bulk-upload'),
+
+    # Supplier-scoped routes: same views, supplier_id read from the URL instead of
+    # (or in addition to) the request body. Writes still require a valid supplier_id
+    # either way; these just let it live in the path.
+    path(
+        'suppliers/<int:supplier_id>/extract/',
+        AIExtractionRunViewSet.as_view({'get': 'list', 'post': 'create'}),
+        name='ai-supplier-extract',
+    ),
+    path(
+        'suppliers/<int:supplier_id>/extract/<int:pk>/',
+        AIExtractionRunViewSet.as_view({'get': 'retrieve'}),
+        name='ai-supplier-extract-detail',
+    ),
+    path(
+        'suppliers/<int:supplier_id>/catalogues/',
+        AICatalogueViewSet.as_view({'get': 'list'}),
+        name='ai-supplier-catalogues',
+    ),
+    path(
+        'suppliers/<int:supplier_id>/catalogues/<int:pk>/',
+        AICatalogueViewSet.as_view({'get': 'retrieve'}),
+        name='ai-supplier-catalogue-detail',
+    ),
+    path(
+        'suppliers/<int:supplier_id>/products/',
+        AICatalogueProductViewSet.as_view({'get': 'list'}),
+        name='ai-supplier-products',
+    ),
+    path(
+        'suppliers/<int:supplier_id>/cards/',
+        AIBusinessCardViewSet.as_view({'get': 'list', 'post': 'create'}),
+        name='ai-supplier-cards',
+    ),
+    path(
+        'suppliers/<int:supplier_id>/cards/<int:pk>/',
+        AIBusinessCardViewSet.as_view({'get': 'retrieve'}),
+        name='ai-supplier-card-detail',
+    ),
+    path(
+        'suppliers/<int:supplier_id>/bulk-upload/',
+        AIBulkUploadView.as_view(),
+        name='ai-supplier-bulk-upload',
+    ),
+    path(
+        'suppliers/<int:supplier_id>/cards/bulk-upload/',
+        AICardBulkUploadView.as_view(),
+        name='ai-supplier-cards-bulk-upload',
+    ),
 ] + router.urls

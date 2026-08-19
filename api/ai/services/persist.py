@@ -31,10 +31,11 @@ def _search_text(name, sku, series, description, attributes):
     return ' '.join(p for p in parts if p).strip()
 
 
-def get_or_create_catalogue(workspace, filename, total_pages, user, card=None):
+def get_or_create_catalogue(workspace, filename, total_pages, user, card=None, supplier=None):
     filename = filename or 'catalogue.pdf'
     catalogue, _created = AICatalogue.objects.get_or_create(
         workspace=workspace,
+        supplier=supplier,
         source_filename=filename,
         defaults={
             'title': _title_from_filename(filename),
@@ -56,12 +57,12 @@ def get_or_create_catalogue(workspace, filename, total_pages, user, card=None):
     return catalogue
 
 
-def persist_run_to_schema(run, result, card=None):
+def persist_run_to_schema(run, result, card=None, supplier=None):
     """Flatten extract JSON into catalogue / page / product rows. Does not change run.result_json."""
     upload = run.upload
     filename = upload.original_filename if upload else (result or {}).get('source_file') or 'catalogue.pdf'
     total_pages = (result or {}).get('total_pages_in_pdf') or (upload.total_pages if upload else 0)
-    catalogue = get_or_create_catalogue(run.workspace, filename, total_pages, run.created_by, card)
+    catalogue = get_or_create_catalogue(run.workspace, filename, total_pages, run.created_by, card, supplier)
 
     if upload and upload.catalogue_id != catalogue.id:
         upload.catalogue = catalogue
@@ -86,6 +87,7 @@ def persist_run_to_schema(run, result, card=None):
         page = AIExtractedPage.objects.create(
             catalogue=catalogue,
             business_card = card,
+            supplier=supplier,
             run=run,
             page_number=page_number,
             page_type=page_data.get('page_type') or '',
@@ -103,6 +105,7 @@ def persist_run_to_schema(run, result, card=None):
             series = (prod.get('series') or page_data.get('series_or_section_title') or '')
             AIExtractedProduct.objects.create(
                 business_card = card,
+                supplier=supplier,
                 catalogue=catalogue,
                 run=run,
                 page=page,

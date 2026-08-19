@@ -18,7 +18,8 @@ from .services.files import (
 
 
 class AIExtractRequestSerializer(serializers.Serializer):
-    card = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    card = serializers.CharField(required=True)
+    supplier = serializers.CharField(required=False, allow_null=True, allow_blank=True)
     files = serializers.ListField(child=serializers.FileField(), allow_empty=False)
     page_mode = serializers.ChoiceField(
         choices=AIExtractionRun.PAGE_MODE_CHOICES,
@@ -61,7 +62,7 @@ class AIExtractRequestSerializer(serializers.Serializer):
         kinds = {classify_upload(item) for item in files}
         mode = attrs.get('page_mode')
         card_id = attrs.get('card')
-        if card_id and not AIBusinessCard.objects.filter(id=card_id).exists():
+        if not AIBusinessCard.objects.filter(id=card_id).exists():
             raise serializers.ValidationError({'card': 'No business card found for that id.'})
         if 'pdf' in kinds and not mode:
             raise serializers.ValidationError({'page_mode': 'Required for PDF uploads (full, first_n, or range).'})
@@ -77,6 +78,7 @@ class AIExtractRequestSerializer(serializers.Serializer):
 
 class AIBulkUploadRequestSerializer(serializers.Serializer):
     file = serializers.FileField()
+    supplier = serializers.CharField(required=False, allow_null=True, allow_blank=True)
     sheet = serializers.CharField(required=False, allow_blank=True, max_length=128)
     header_row = serializers.IntegerField(required=False, allow_null=True, min_value=1)
     column_map = serializers.CharField(required=False, allow_blank=True)
@@ -95,6 +97,7 @@ class AIBulkUploadRequestSerializer(serializers.Serializer):
 
 class AICardBulkUploadRequestSerializer(serializers.Serializer):
     file = serializers.FileField()
+    supplier = serializers.CharField(required=False, allow_null=True, allow_blank=True)
     sheet = serializers.CharField(required=False, allow_blank=True, max_length=128)
     header_row = serializers.IntegerField(required=False, allow_null=True, min_value=1)
     column_map = serializers.CharField(required=False, allow_blank=True)
@@ -210,6 +213,7 @@ class AIExtractedProductWriteSerializer(serializers.ModelSerializer):
         model = AIExtractedProduct
         fields = (
             'id',
+            'supplier',
             'business_card',
             'catalogue',
             'run',
@@ -357,6 +361,7 @@ def _validate_card_upload(value):
 
 
 class AICardExtractRequestSerializer(serializers.Serializer):
+    supplier = serializers.CharField(required=False, allow_null=True, allow_blank=True)
     files = serializers.ListField(child=serializers.FileField(), allow_empty=False)
     model_tier = serializers.ChoiceField(
         choices=AIExtractionRun.MODEL_TIER_CHOICES,

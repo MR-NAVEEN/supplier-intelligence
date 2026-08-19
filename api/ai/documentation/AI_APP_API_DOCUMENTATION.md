@@ -26,17 +26,25 @@ On failure, `success` is `false`, `status` is the HTTP code as a string, and `me
 
 ---
 
-## ✅ Resolved (2026-08-19): catalogues and business cards are now fully independent
+## Supplier & business card scoping (2026-08-19)
 
-Catalogue extraction and business-card data do **not** need to be linked — most catalogues have no associated business card, and most business cards aren't tied to a catalogue. `business_card` on `AICatalogue` / `AICatalogueUpload` / `AIExtractionRun` / `AIExtractedPage` / `AIExtractedProduct` is now **optional** (nullable, `on_delete=SET_NULL`) — it's still there if you *want* to tag a catalogue with the business card it came from, but nothing requires it anymore. `card` on `POST /api/ai/extract/` is likewise optional now.
+Every write endpoint in this app now requires a **`supplier`** id, and `POST /api/ai/extract/` also requires a **`card`** (business card) id. Both are plain foreign keys — `AICatalogue` / `AICatalogueUpload` / `AIExtractionRun` / `AIExtractedPage` / `AIExtractedProduct` / `AIBusinessCard` all carry a `supplier` column (nullable at the DB level, `on_delete=SET_NULL`, so deleting a supplier never cascades into deleting catalogue data — but every API write is validated to require one before anything is saved, so you get a clean `400` instead of a raw DB error if it's missing).
 
-While fixing this, also fixed a real bug it was masking: `POST /api/ai/extract/` was calling the AI vision extraction **twice** per PDF request (leftover from a botched merge) — double cost, double time, for the exact same result. Verified live: an 8-page PDF now runs in ~27s / ~$0.10, matching a single pass (previously would have been ~2x that).
+**Two ways to supply `supplier` — pick whichever fits your client:**
+1. **In the URL** (recommended): call the supplier-nested version of the endpoint, e.g. `POST /api/ai/suppliers/{supplier_id}/extract/`. No `supplier` field needed in the body.
+2. **In the body**: call the plain endpoint (`POST /api/ai/extract/`) and include `supplier` as a form/JSON field, same as `card`.
 
-Both `POST /api/ai/extract/` and `POST /api/ai/bulk-upload/` are confirmed working end-to-end again as of this update.
+If neither is present, you get `400 {"supplier": "This field is required."}` — never a silent failure or a 500.
+
+**Every GET/list endpoint can be filtered by supplier** the same two ways: nested under `/api/ai/suppliers/{supplier_id}/...` (e.g. `GET /api/ai/suppliers/{supplier_id}/catalogues/`), or via `?supplier={id}` on the plain endpoint (e.g. `GET /api/ai/catalogues/?supplier={id}`). Both return identical results — the nested path is just cleaner if your client already thinks in terms of "this supplier's stuff."
+
+**`card` is required only on `POST /api/ai/extract/`** — it's the one endpoint tying a catalogue extraction to the business card it was scanned alongside. Bulk-upload endpoints have no card concept (there's no card photo involved in a spreadsheet import).
+
+Along the way, also fixed a real bug: `POST /api/ai/extract/` was calling the AI vision extraction **twice** per PDF request (leftover from a botched merge) — double cost, double time, for the exact same result. Verified live: an 8-page PDF now runs in ~27s / ~$0.10, matching a single pass.
 
 ---
 
-## 1. Extract catalogue — `POST /api/ai/extract/`
+## 1. Extract catalogue — `POST /api/ai/extract/` (or `POST /api/ai/suppliers/{supplier_id}/extract/`)
 
 Extracts product listings from a PDF catalogue **or** a set of catalogue photos using AI vision. One PDF *or* multiple photos per request — never both, never more than one PDF.
 
@@ -44,7 +52,8 @@ Extracts product listings from a PDF catalogue **or** a set of catalogue photos 
 
 | Field | Required | Notes |
 |---|---|---|
-| `card` | no | optional id of an `AIBusinessCard` to tag this catalogue with (create one first via `POST /api/ai/cards/`) — most extractions don't need this |
+| `card` | **yes** | id of an `AIBusinessCard` (create one first via `POST /api/ai/cards/`) |
+| `supplier` | **yes**, unless using the `/suppliers/{supplier_id}/extract/` URL | id of a `Supplier` — via URL path or this field, either works |
 | `file` (repeatable) | yes | the PDF, or one or more photo files. Repeat the key `file` for multiple photos (`files` / `files[]` also accepted) |
 | `page_mode` | required for PDFs | `full`, `first_n`, or `range`. Optional for photos (defaults to `full`) |
 | `page_count` | required if `page_mode=first_n` | integer, e.g. `5` |
@@ -57,39 +66,44 @@ Rules enforced by the server:
 - Max file size: 50 MB per file.
 - Max pages per request: `AI_MAX_PAGES_PER_REQUEST` (currently **100**).
 - Can't mix a PDF and photos in the same request. Only one PDF per request (photos can be multiple).
+- Missing/invalid `card` or `supplier` → clean `400`, e.g. `{"card": "This field may not be null."}` or `{"supplier": "This field is required."}` / `{"supplier": "Invalid supplier id."}`.
 
-### Example — PDF, first 5 pages (typical — no card needed)
+### Example — PDF, first 5 pages, supplier via URL
 
 ```
-POST /api/ai/extract/
+POST /api/ai/suppliers/7/extract/
 Content-Type: multipart/form-data
 
+card       = 3
 file       = catalogue.pdf
 page_mode  = first_n
 page_count = 5
 model_tier = high_accuracy
 ```
 
+### Example — same thing, supplier via body instead
+
+```
+POST /api/ai/extract/
+Content-Type: multipart/form-data
+
+card       = 3
+supplier   = 7
+file       = catalogue.pdf
+page_mode  = first_n
+page_count = 5
+```
+
 ### Example — multiple photos
 
 ```
-POST /api/ai/extract/
-Content-Type: multipart/form-data
-
-file = page1.jpg
-file = page2.jpg
-file = page3.jpg
-```
-
-### Example — tagging the catalogue with a business card (optional)
-
-```
-POST /api/ai/extract/
+POST /api/ai/suppliers/7/extract/
 Content-Type: multipart/form-data
 
 card = 3
-file = catalogue.pdf
-page_mode = full
+file = page1.jpg
+file = page2.jpg
+file = page3.jpg
 ```
 
 ### Response (`201`)
@@ -164,9 +178,9 @@ page_mode = full
 
 ---
 
-## 2. List extraction runs — `GET /api/ai/extract/`
+## 2. List extraction runs — `GET /api/ai/extract/` (or `GET /api/ai/suppliers/{supplier_id}/extract/`)
 
-Paginated list of past extraction runs (uses `AIExtractionRunListSerializer` — a lighter shape than the detail view).
+Paginated list of past extraction runs (uses `AIExtractionRunListSerializer` — a lighter shape than the detail view). Filter by supplier with `?supplier={id}` on the plain URL, or use the nested URL.
 
 ```json
 {
@@ -201,7 +215,9 @@ Same full shape as the `201` response from section 1's `data`.
 
 ---
 
-## 4. List catalogues — `GET /api/ai/catalogues/`
+## 4. List catalogues — `GET /api/ai/catalogues/` (or `GET /api/ai/suppliers/{supplier_id}/catalogues/`)
+
+Filter by supplier with `?supplier={id}` on the plain URL, or use the nested URL — same result either way.
 
 ```json
 {
@@ -271,15 +287,15 @@ Full schema: every current page and every current product nested inside.
 
 ## 6. List a catalogue's products — `GET /api/ai/catalogues/{catalogue_id}/products/`
 
-Same product shape as above, scoped to one catalogue. Optional query params: `?page_number=4`, `?sku=ABC`.
+Same product shape as above, scoped to one catalogue. Optional query params: `?page_number=4`, `?sku=ABC`, `?supplier={id}`.
 
-## 7. List / manage products directly — `/api/ai/products/`
+## 7. List / manage products directly — `/api/ai/products/` (or `GET /api/ai/suppliers/{supplier_id}/products/` for listing)
 
 A flat, catalogue-agnostic view over `AIExtractedProduct`, with full CRUD:
 
 | Method | Purpose |
 |---|---|
-| `GET /api/ai/products/` | list all current products across every catalogue (filters: `?page_number=`, `?sku=`) |
+| `GET /api/ai/products/` | list all current products across every catalogue (filters: `?page_number=`, `?sku=`, `?supplier=`) |
 | `GET /api/ai/products/{id}/` | one product |
 | `POST /api/ai/products/` | manually create a product row |
 | `PUT` / `PATCH /api/ai/products/{id}/` | edit a product |
@@ -289,6 +305,7 @@ Write payload (`POST`/`PUT`/`PATCH`) — JSON:
 
 ```json
 {
+  "supplier": 7,
   "catalogue": 1,
   "run": 13,
   "page": 40,
@@ -304,11 +321,11 @@ Write payload (`POST`/`PUT`/`PATCH`) — JSON:
   "is_current": true
 }
 ```
-This is meant for manual corrections, not the normal extraction flow — you need valid `catalogue`/`run`/`page` ids from an existing extraction. `business_card` is accepted too, but optional.
+This is meant for manual corrections, not the normal extraction flow — you need valid `catalogue`/`run`/`page` ids from an existing extraction. `supplier` and `business_card` are both accepted here but optional (unlike the create-time endpoints, this one doesn't enforce them).
 
 ---
 
-## 8. Extract a business card — `POST /api/ai/cards/`
+## 8. Extract a business card — `POST /api/ai/cards/` (or `POST /api/ai/suppliers/{supplier_id}/cards/`)
 
 OCRs a photo (or PDF) of a business card into structured contact fields. Supports multiple sides (front/back) — repeat the `file` key.
 
@@ -317,10 +334,11 @@ OCRs a photo (or PDF) of a business card into structured contact fields. Support
 | Field | Required | Notes |
 |---|---|---|
 | `file` (repeatable, max 6) | yes | jpg, png, webp, gif, bmp, tiff, or pdf |
+| `supplier` | **yes**, unless using the `/suppliers/{supplier_id}/cards/` URL | id of a `Supplier` |
 | `model_tier` | no (default `high_accuracy`) | `budget`, `balanced`, `high_accuracy` |
 
 ```
-POST /api/ai/cards/
+POST /api/ai/suppliers/7/cards/
 file = front.jpg
 file = back.jpg
 ```
@@ -358,9 +376,9 @@ file = back.jpg
 }
 ```
 
-## 9. List business cards — `GET /api/ai/cards/`
+## 9. List business cards — `GET /api/ai/cards/` (or `GET /api/ai/suppliers/{supplier_id}/cards/`)
 
-Paginated list, filterable with `?company=Acme`, `?name=Jane`, `?q=free-text`.
+Paginated list, filterable with `?company=Acme`, `?name=Jane`, `?q=free-text`, `?supplier={id}`.
 
 ## 10. Retrieve one business card — `GET /api/ai/cards/{id}/`
 
@@ -415,7 +433,7 @@ Ask natural-language questions about the extracted catalogue data. An LLM writes
 
 ---
 
-## 12. Bulk-upload products from Excel/CSV — `POST /api/ai/bulk-upload/`
+## 12. Bulk-upload products from Excel/CSV — `POST /api/ai/bulk-upload/` (or `POST /api/ai/suppliers/{supplier_id}/bulk-upload/`)
 
 Imports a spreadsheet of products directly into the database — normally **no AI call, no OCR**, just parses rows. This is the endpoint for spreadsheets; `/api/ai/extract/` explicitly rejects CSV/XLSX files.
 
@@ -424,6 +442,7 @@ Imports a spreadsheet of products directly into the database — normally **no A
 | Field | Required | Notes |
 |---|---|---|
 | `file` | yes | `.xlsx`, `.xlsm`, `.csv`, or `.tsv` (legacy `.xls` is **not** supported — re-save as `.xlsx`) |
+| `supplier` | **yes**, unless using the `/suppliers/{supplier_id}/bulk-upload/` URL | id of a `Supplier` |
 | `sheet` | no | sheet name or index (xlsx only); defaults to the first sheet |
 | `header_row` | no | 1-based row number where headers live; auto-detected if omitted |
 | `column_map` | no | JSON string to force a column mapping, e.g. `{"product_name":"Item Name","price":"MRP"}` |
@@ -531,17 +550,18 @@ Cost is `0` unless the AI column-mapping fallback triggered (see above) — the 
 
 ---
 
-## 13. Bulk-upload business cards from Excel/CSV — `POST /api/ai/cards/bulk-upload/`
+## 13. Bulk-upload business cards from Excel/CSV — `POST /api/ai/cards/bulk-upload/` (or `POST /api/ai/suppliers/{supplier_id}/cards/bulk-upload/`)
 
 Imports business-card contacts directly into the database from a spreadsheet — one row = one `AIBusinessCard`. No image, no OCR; this is for when you already have contact data in a sheet (e.g. exported from a trade show scanner app or a CRM) rather than photos of physical cards. For photos, use `POST /api/ai/cards/` (section 8) instead.
 
-This endpoint only ever writes to `AIBusinessCard` — it has no dependency on catalogues, extraction runs, or `business_card` links at all (`image` is nullable specifically to support this row-per-contact-record flow with no photo). Independent of, and unaffected by, anything happening on the catalogue side.
+This endpoint only ever writes to `AIBusinessCard` — it has no dependency on catalogues or extraction runs. Every imported row is tagged with the same `supplier` for the whole batch.
 
 ### Payload (`multipart/form-data`)
 
 | Field | Required | Notes |
 |---|---|---|
 | `file` | yes | `.xlsx`, `.xlsm`, `.csv`, or `.tsv` (legacy `.xls` not supported) |
+| `supplier` | **yes**, unless using the `/suppliers/{supplier_id}/cards/bulk-upload/` URL | id of a `Supplier` — applied to every imported card in the batch |
 | `sheet` | no | sheet name or index (xlsx only); defaults to the first sheet |
 | `header_row` | no | 1-based row number where headers live; auto-detected if omitted |
 | `column_map` | no | JSON string to force a mapping, e.g. `{"full_name":"Contact Person","company":"Organisation"}` |
