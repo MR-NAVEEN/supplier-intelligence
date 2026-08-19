@@ -26,11 +26,13 @@ On failure, `success` is `false`, `status` is the HTTP code as a string, and `me
 
 ---
 
-## ⚠️ Known issue (as of 2026-08-19)
+## ✅ Resolved (2026-08-19): catalogues and business cards are now fully independent
 
-A recent merge added a **required** `card` field (business card id) to `POST /api/ai/extract/`, and a required, non-nullable `business_card` link on the underlying `AICatalogue` / `AICatalogueUpload` / `AIExtractionRun` / `AIExtractedPage` / `AIExtractedProduct` models. On top of that, there's an argument-count bug (`_succeed_run` calls `persist_run_to_schema(run, result)` with 2 args, but the function now requires 3) that makes `POST /api/ai/extract/` throw a `TypeError` on every request. **Confirmed live:** `POST /api/ai/bulk-upload/` (product spreadsheet import) currently throws `IntegrityError: NOT NULL constraint failed: ai_aicatalogueupload.business_card_id` on the very first DB write, before any parsing even runs. This doc describes the intended/working contract for those two endpoints; if you hit a 500, this pre-existing issue is why.
+Catalogue extraction and business-card data do **not** need to be linked — most catalogues have no associated business card, and most business cards aren't tied to a catalogue. `business_card` on `AICatalogue` / `AICatalogueUpload` / `AIExtractionRun` / `AIExtractedPage` / `AIExtractedProduct` is now **optional** (nullable, `on_delete=SET_NULL`) — it's still there if you *want* to tag a catalogue with the business card it came from, but nothing requires it anymore. `card` on `POST /api/ai/extract/` is likewise optional now.
 
-**Not affected:** `POST /api/ai/cards/bulk-upload/` (section 13 below) writes only to `AIBusinessCard`, which has no such required link — it's fully working today, verified end-to-end.
+While fixing this, also fixed a real bug it was masking: `POST /api/ai/extract/` was calling the AI vision extraction **twice** per PDF request (leftover from a botched merge) — double cost, double time, for the exact same result. Verified live: an 8-page PDF now runs in ~27s / ~$0.10, matching a single pass (previously would have been ~2x that).
+
+Both `POST /api/ai/extract/` and `POST /api/ai/bulk-upload/` are confirmed working end-to-end again as of this update.
 
 ---
 
@@ -42,7 +44,7 @@ Extracts product listings from a PDF catalogue **or** a set of catalogue photos 
 
 | Field | Required | Notes |
 |---|---|---|
-| `card` | **yes** | id of an `AIBusinessCard` (create one first via `POST /api/ai/cards/`) — see known issue above |
+| `card` | no | optional id of an `AIBusinessCard` to tag this catalogue with (create one first via `POST /api/ai/cards/`) — most extractions don't need this |
 | `file` (repeatable) | yes | the PDF, or one or more photo files. Repeat the key `file` for multiple photos (`files` / `files[]` also accepted) |
 | `page_mode` | required for PDFs | `full`, `first_n`, or `range`. Optional for photos (defaults to `full`) |
 | `page_count` | required if `page_mode=first_n` | integer, e.g. `5` |
@@ -56,13 +58,12 @@ Rules enforced by the server:
 - Max pages per request: `AI_MAX_PAGES_PER_REQUEST` (currently **100**).
 - Can't mix a PDF and photos in the same request. Only one PDF per request (photos can be multiple).
 
-### Example — PDF, first 5 pages
+### Example — PDF, first 5 pages (typical — no card needed)
 
 ```
 POST /api/ai/extract/
 Content-Type: multipart/form-data
 
-card       = 3
 file       = catalogue.pdf
 page_mode  = first_n
 page_count = 5
@@ -75,10 +76,20 @@ model_tier = high_accuracy
 POST /api/ai/extract/
 Content-Type: multipart/form-data
 
-card = 3
 file = page1.jpg
 file = page2.jpg
 file = page3.jpg
+```
+
+### Example — tagging the catalogue with a business card (optional)
+
+```
+POST /api/ai/extract/
+Content-Type: multipart/form-data
+
+card = 3
+file = catalogue.pdf
+page_mode = full
 ```
 
 ### Response (`201`)
@@ -278,7 +289,6 @@ Write payload (`POST`/`PUT`/`PATCH`) — JSON:
 
 ```json
 {
-  "business_card": 3,
   "catalogue": 1,
   "run": 13,
   "page": 40,
@@ -294,7 +304,7 @@ Write payload (`POST`/`PUT`/`PATCH`) — JSON:
   "is_current": true
 }
 ```
-This is meant for manual corrections, not the normal extraction flow — you need valid `catalogue`/`run`/`page` ids from an existing extraction (and currently `business_card`, per the known issue above).
+This is meant for manual corrections, not the normal extraction flow — you need valid `catalogue`/`run`/`page` ids from an existing extraction. `business_card` is accepted too, but optional.
 
 ---
 
@@ -408,8 +418,6 @@ Ask natural-language questions about the extracted catalogue data. An LLM writes
 ## 12. Bulk-upload products from Excel/CSV — `POST /api/ai/bulk-upload/`
 
 Imports a spreadsheet of products directly into the database — normally **no AI call, no OCR**, just parses rows. This is the endpoint for spreadsheets; `/api/ai/extract/` explicitly rejects CSV/XLSX files.
-
-> ⚠️ See the known-issue box at the top of this doc — this endpoint currently 500s on every request due to a pre-existing bug unrelated to the mapping logic below.
 
 ### Payload (`multipart/form-data`)
 
@@ -527,7 +535,7 @@ Cost is `0` unless the AI column-mapping fallback triggered (see above) — the 
 
 Imports business-card contacts directly into the database from a spreadsheet — one row = one `AIBusinessCard`. No image, no OCR; this is for when you already have contact data in a sheet (e.g. exported from a trade show scanner app or a CRM) rather than photos of physical cards. For photos, use `POST /api/ai/cards/` (section 8) instead.
 
-**Fully working today** — unlike the product bulk-upload above, this endpoint doesn't touch any of the models affected by the known `business_card`-required-FK issue; it only writes to `AIBusinessCard`, which has no such dependency (`image` is nullable specifically to support this row-per-contact-record flow with no photo).
+This endpoint only ever writes to `AIBusinessCard` — it has no dependency on catalogues, extraction runs, or `business_card` links at all (`image` is nullable specifically to support this row-per-contact-record flow with no photo). Independent of, and unaffected by, anything happening on the catalogue side.
 
 ### Payload (`multipart/form-data`)
 

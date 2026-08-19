@@ -16,7 +16,7 @@ from .services.files import (
 
 
 class AIExtractRequestSerializer(serializers.Serializer):
-    card = serializers.CharField(required=True)
+    card = serializers.CharField(required=False, allow_null=True, allow_blank=True)
     files = serializers.ListField(child=serializers.FileField(), allow_empty=False)
     page_mode = serializers.ChoiceField(
         choices=AIExtractionRun.PAGE_MODE_CHOICES,
@@ -58,9 +58,9 @@ class AIExtractRequestSerializer(serializers.Serializer):
         files = attrs.get('files') or []
         kinds = {classify_upload(item) for item in files}
         mode = attrs.get('page_mode')
-        card = AIBusinessCard.objects.filter(id = attrs.get('card')).first()
-        if not card:
-            raise serializers.ValidationError("give me the valid card id")
+        card_id = attrs.get('card')
+        if card_id and not AIBusinessCard.objects.filter(id=card_id).exists():
+            raise serializers.ValidationError({'card': 'No business card found for that id.'})
         if 'pdf' in kinds and not mode:
             raise serializers.ValidationError({'page_mode': 'Required for PDF uploads (full, first_n, or range).'})
         if not mode:

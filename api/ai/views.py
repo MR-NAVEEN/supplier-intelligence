@@ -84,7 +84,7 @@ def _fail_run(run, exc):
     return error_envelope(message, status_code, data=AIExtractionRunSerializer(run).data)
 
 
-def _succeed_run(run, extracted, pages_billed):
+def _succeed_run(run, extracted, pages_billed, card=None):
     finished = timezone.now()
     duration_ms = int((finished - run.started_at).total_seconds() * 1000)
     result = extracted['result']
@@ -109,7 +109,7 @@ def _succeed_run(run, extracted, pages_billed):
     run.estimated_cost_usd = costing['estimated_cost_usd']
     run.cost_breakdown = costing['breakdown']
     run.save()
-    persist_run_to_schema(run, result)
+    persist_run_to_schema(run, result, card)
     return success_envelope(AIExtractionRunSerializer(run).data, 'Extraction completed', 201)
 
 
@@ -175,6 +175,7 @@ class AIExtractionRunViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
         serializer = AIExtractRequestSerializer(
             data={
                 'files': uploads,
+                'card': request.data.get('card') or None,
                 'page_mode': request.data.get('page_mode') or None,
                 'page_count': request.data.get('page_count') or None,
                 'page_range': request.data.get('page_range') or '',
@@ -184,7 +185,11 @@ class AIExtractionRunViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
         )
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        card = AIBusinessCard.objects.filter(id = data['card']).first()
+        card = None
+        if data.get('card'):
+            card = AIBusinessCard.objects.filter(id=data['card']).first()
+            if card is None:
+                return error_envelope('No business card found for that card id.', 400)
         uploads = data['files']
         kind = classify_upload(uploads[0])
 
@@ -246,34 +251,6 @@ class AIExtractionRunViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
         )
 
         try:
-            extracted = extract_catalogue(upload.file.path, pages, model_name, dpi=dpi)
-            finished = timezone.now()
-            duration_ms = int((finished - run.started_at).total_seconds() * 1000)
-            result = extracted['result']
-            usage = extracted['usage']
-            costing = estimate_cost(model_name, usage['prompt_tokens'], usage['completion_tokens'])
-            pages_kept = len(result.get('pages') or [])
-            products_count = sum(len(page.get('products') or []) for page in (result.get('pages') or []))
-            pages_billed = len(pages)
-            costing['breakdown']['pages_billed'] = pages_billed
-            if pages_billed:
-                avg = (costing['estimated_cost_usd'] / Decimal(pages_billed)).quantize(Decimal('0.000001'))
-                costing['breakdown']['avg_cost_per_page_usd'] = str(avg)
-
-            run.status = AIExtractionRun.STATUS_SUCCEEDED
-            run.result_json = result
-            run.pages_kept = pages_kept
-            run.products_count = products_count
-            run.advertisement_pages_skipped = extracted['advertisement_pages_skipped']
-            run.finished_at = finished
-            run.duration_ms = duration_ms
-            run.prompt_tokens = usage['prompt_tokens']
-            run.completion_tokens = usage['completion_tokens']
-            run.total_tokens = usage['total_tokens']
-            run.estimated_cost_usd = costing['estimated_cost_usd']
-            run.cost_breakdown = costing['breakdown']
-            run.save()
-            persist_run_to_schema(run, result, card)
             if kind == 'pdf':
                 extracted = extract_catalogue(upload.file.path, pages, model_name, dpi=dpi)
             else:
@@ -285,7 +262,7 @@ class AIExtractionRunViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
                     )
                     image_paths.append(default_storage.path(stored))
                 extracted = extract_catalogue_from_images(image_paths, pages, model_name)
-            return _succeed_run(run, extracted, len(pages))
+            return _succeed_run(run, extracted, len(pages), card=card)
         except Exception as exc:  # noqa: BLE001
             return _fail_run(run, exc)
 

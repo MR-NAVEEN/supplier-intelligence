@@ -31,10 +31,9 @@ def _search_text(name, sku, series, description, attributes):
     return ' '.join(p for p in parts if p).strip()
 
 
-def get_or_create_catalogue(workspace, filename, total_pages, user, card):
+def get_or_create_catalogue(workspace, filename, total_pages, user, card=None):
     filename = filename or 'catalogue.pdf'
     catalogue, _created = AICatalogue.objects.get_or_create(
-        business_card = card,
         workspace=workspace,
         source_filename=filename,
         defaults={
@@ -42,15 +41,22 @@ def get_or_create_catalogue(workspace, filename, total_pages, user, card):
             'brand': _title_from_filename(filename).split()[0] if filename else '',
             'total_pages': total_pages or 0,
             'created_by': user,
+            'business_card': card,
         },
     )
+    update_fields = []
     if total_pages and catalogue.total_pages != total_pages:
         catalogue.total_pages = total_pages
-        catalogue.save(update_fields=['total_pages', 'updated_at'])
+        update_fields.append('total_pages')
+    if card and catalogue.business_card_id != card.id:
+        catalogue.business_card = card
+        update_fields.append('business_card')
+    if update_fields:
+        catalogue.save(update_fields=update_fields + ['updated_at'])
     return catalogue
 
 
-def persist_run_to_schema(run, result, card):
+def persist_run_to_schema(run, result, card=None):
     """Flatten extract JSON into catalogue / page / product rows. Does not change run.result_json."""
     upload = run.upload
     filename = upload.original_filename if upload else (result or {}).get('source_file') or 'catalogue.pdf'
