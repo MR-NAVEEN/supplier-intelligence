@@ -356,7 +356,7 @@ class AICatalogueProductViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet, mix
 
 
 class NoteViewSet(AIOpenViewSetMixin, viewsets.ModelViewSet):
-    queryset = Note.objects.select_related('business_card', 'catalogue', 'created_by').prefetch_related('attachments').all()
+    queryset = Note.objects.select_related('business_card', 'created_by').prefetch_related('attachments').all()
     serializer_class = NoteSerializer
     http_method_names = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options']
 
@@ -366,13 +366,10 @@ class NoteViewSet(AIOpenViewSetMixin, viewsets.ModelViewSet):
         return NoteSerializer
 
     def get_queryset(self):
-        qs = Note.objects.select_related('business_card', 'catalogue', 'created_by').prefetch_related('attachments')
+        qs = Note.objects.select_related('business_card', 'created_by').prefetch_related('attachments')
         business_card = self.request.query_params.get('business_card')
         if business_card:
             qs = qs.filter(business_card_id=business_card)
-        catalogue = self.request.query_params.get('catalogue')
-        if catalogue:
-            qs = qs.filter(catalogue_id=catalogue)
         return qs
 
     def perform_create(self, serializer):
@@ -385,16 +382,16 @@ class NoteViewSet(AIOpenViewSetMixin, viewsets.ModelViewSet):
 
 
 class AIAttachmentViewSet(AIOpenViewSetMixin, viewsets.ModelViewSet):
-    queryset = AIAttachment.objects.select_related('note', 'uploaded_by').all()
+    queryset = AIAttachment.objects.select_related('business_card', 'uploaded_by').all()
     serializer_class = AIAttachmentSerializer
     parser_classes = [MultiPartParser, FormParser]
     http_method_names = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options']
 
     def get_queryset(self):
-        qs = AIAttachment.objects.select_related('note', 'uploaded_by')
-        note = self.request.query_params.get('note')
-        if note:
-            qs = qs.filter(note_id=note)
+        qs = AIAttachment.objects.select_related('business_card', 'uploaded_by')
+        business_card = self.request.query_params.get('business_card')
+        if business_card:
+            qs = qs.filter(business_card_id=business_card)
         return qs
 
     def perform_create(self, serializer):
@@ -425,7 +422,7 @@ class AIBusinessCardViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
     queryset = AIBusinessCard.objects.all()
     serializer_class = AIBusinessCardSerializer
     parser_classes = [MultiPartParser, FormParser]
-    http_method_names = ['get', 'post', 'head', 'options']
+    http_method_names = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options']
     pagination_class = StandardPagination
 
     def get_serializer_class(self):
@@ -560,6 +557,11 @@ class AIBusinessCardViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
             return error_envelope(str(exc), status_code, data=AIBusinessCardSerializer(card).data)
 
         return success_envelope(AIBusinessCardSerializer(card).data, 'Card extracted', 201)
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        instance.delete()
+        return success_envelope(None, 'Deleted', 204)
 
 
 class AIChatView(APIView):

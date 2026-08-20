@@ -324,9 +324,8 @@ class Note(models.Model):
     business_card = models.ForeignKey(
                 AIBusinessCard,
                 on_delete=models.CASCADE,
-                related_name='catalogue_notes_business_card',
+                related_name='notes',
             )
-    catalogue = models.ForeignKey(AICatalogue, on_delete=models.CASCADE, related_name='notes')
     title = models.CharField(
         max_length=255,
     )
@@ -383,12 +382,12 @@ class AIAttachment(models.Model):
         GIF = "gif", "GIF"
         SVG = "svg", "SVG"
         OTHER = "other", "Other"
-
-    note = models.ForeignKey(
-        Note,
-        on_delete=models.CASCADE,
-        related_name="attachments",
-    )
+        
+    business_card = models.ForeignKey(
+                    AIBusinessCard,
+                    on_delete=models.CASCADE,
+                    related_name='attachments',
+                )
 
     file = models.FileField(
         upload_to="catalogue_attachments/",
@@ -448,15 +447,15 @@ class AIAttachment(models.Model):
         ordering = ["-created_at"]
         indexes = [
             models.Index(
-                fields=["note", "attachment_type"],
+                fields=["business_card", "attachment_type"],
                 name="note_attach_type_idx",
             ),
             models.Index(
-                fields=["note", "document_type"],
+                fields=["business_card", "document_type"],
                 name="note_document_type_idx",
             ),
             models.Index(
-                fields=["note", "image_type"],
+                fields=["business_card", "image_type"],
                 name="note_image_type_idx",
             ),
         ]

@@ -403,7 +403,18 @@ class AIBusinessCardSerializer(serializers.ModelSerializer):
             'error_message',
             'created_at',
         )
-        read_only_fields = fields
+        read_only_fields = (
+            'id',
+            'original_filename',
+            'status',
+            'source_files',
+            'result_json',
+            'model_name',
+            'timing',
+            'costing',
+            'error_message',
+            'created_at',
+        )
 
     def get_timing(self, obj):
         return {
@@ -436,7 +447,7 @@ class AIAttachmentSerializer(serializers.ModelSerializer):
         model = AIAttachment
         fields = (
             'id',
-            'note',
+            'business_card',
             'file',
             'original_filename',
             'attachment_type',
@@ -471,7 +482,6 @@ class NoteSerializer(serializers.ModelSerializer):
         fields = (
             'id',
             'business_card',
-            'catalogue',
             'title',
             'description',
             'created_by',
@@ -490,7 +500,6 @@ class NoteListSerializer(serializers.ModelSerializer):
         fields = (
             'id',
             'business_card',
-            'catalogue',
             'title',
             'description',
             'created_by',
