@@ -203,7 +203,6 @@ class AIExtractionRunViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
             data={
                 'files': uploads,
                 'card': request.data.get('card') or None,
-                'supplier': self.kwargs.get('supplier_id') or request.data.get('supplier') or None,
                 'page_mode': request.data.get('page_mode') or None,
                 'page_count': request.data.get('page_count') or None,
                 'page_range': request.data.get('page_range') or '',
@@ -213,12 +212,13 @@ class AIExtractionRunViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet):
         )
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        supplier, err = resolve_supplier(self.kwargs, data)
-        if err:
-            return err
         card = AIBusinessCard.objects.filter(id=data['card']).first()
         if card is None:
             return error_envelope('No business card found for that card id.', 400)
+        # supplier is derived from the card, not a separate field -- every card already
+        # has a supplier attached at OCR time, so asking for it again here would just be
+        # restating something the card already carries.
+        supplier = card.supplier
         uploads = data['files']
         kind = classify_upload(uploads[0])
 

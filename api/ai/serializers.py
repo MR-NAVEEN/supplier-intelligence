@@ -19,7 +19,6 @@ from .services.files import (
 
 class AIExtractRequestSerializer(serializers.Serializer):
     card = serializers.CharField(required=True)
-    supplier = serializers.CharField(required=False, allow_null=True, allow_blank=True)
     files = serializers.ListField(child=serializers.FileField(), allow_empty=False)
     page_mode = serializers.ChoiceField(
         choices=AIExtractionRun.PAGE_MODE_CHOICES,

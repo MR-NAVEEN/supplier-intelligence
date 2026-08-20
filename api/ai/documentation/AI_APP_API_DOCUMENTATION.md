@@ -26,25 +26,21 @@ On failure, `success` is `false`, `status` is the HTTP code as a string, and `me
 
 ---
 
-## Supplier & business card scoping (2026-08-19)
+## Supplier & business card scoping (updated 2026-08-20)
 
-Every write endpoint in this app now requires a **`supplier`** id, and `POST /api/ai/extract/` also requires a **`card`** (business card) id. Both are plain foreign keys — `AICatalogue` / `AICatalogueUpload` / `AIExtractionRun` / `AIExtractedPage` / `AIExtractedProduct` / `AIBusinessCard` all carry a `supplier` column (nullable at the DB level, `on_delete=SET_NULL`, so deleting a supplier never cascades into deleting catalogue data — but every API write is validated to require one before anything is saved, so you get a clean `400` instead of a raw DB error if it's missing).
+Every write endpoint requires a **`supplier`**, except `POST /api/ai/extract/` — there, `supplier` isn't a field at all anymore. It's **derived from the `card`** you pass in: `POST /api/ai/cards/` already requires `supplier` at OCR time, so every `AIBusinessCard` permanently carries one. Since extract already requires `card`, asking for `supplier` a second time in the same request was pure duplication — so it's gone. Pass `card`, and the catalogue, its pages, and its products all automatically inherit that card's supplier.
 
-**Two ways to supply `supplier` — pick whichever fits your client:**
-1. **In the URL** (recommended): call the supplier-nested version of the endpoint, e.g. `POST /api/ai/suppliers/{supplier_id}/extract/`. No `supplier` field needed in the body.
-2. **In the body**: call the plain endpoint (`POST /api/ai/extract/`) and include `supplier` as a form/JSON field, same as `card`.
+**Where `supplier` is still an explicit field:** `POST /api/ai/bulk-upload/`, `POST /api/ai/cards/`, `POST /api/ai/cards/bulk-upload/`. None of those have a `card` to derive it from (a spreadsheet import or a fresh card scan has nothing else to inherit a supplier from), so they still require it directly — via the URL (`/api/ai/suppliers/{supplier_id}/...`) or the body field, whichever fits your client. Sending it and getting `400 {"supplier": "This field is required."}` if missing works exactly as before for these three.
 
-If neither is present, you get `400 {"supplier": "This field is required."}` — never a silent failure or a 500.
+**`POST /api/ai/suppliers/{supplier_id}/extract/` no longer accepts POST** (`405`) — since supplier isn't a settable field on extract anymore, that URL doesn't make sense as a create endpoint. The `GET` version (`/api/ai/suppliers/{supplier_id}/extract/`, listing runs) still works fine, same as `?supplier=` filtering on every other list endpoint — those are unaffected, since the `supplier` column itself is still there, just no longer directly writable on extract.
 
-**Every GET/list endpoint can be filtered by supplier** the same two ways: nested under `/api/ai/suppliers/{supplier_id}/...` (e.g. `GET /api/ai/suppliers/{supplier_id}/catalogues/`), or via `?supplier={id}` on the plain endpoint (e.g. `GET /api/ai/catalogues/?supplier={id}`). Both return identical results — the nested path is just cleaner if your client already thinks in terms of "this supplier's stuff."
+**Re-extracting the same file always updates the same catalogue now, regardless of supplier.** `AICatalogue`'s uniqueness is back to just `(workspace, source_filename)` — `supplier` is a tag on the catalogue (like `business_card`), not part of what makes two catalogues "the same." Concretely: if catalogue `X.pdf` was first extracted with a card from Supplier A, and later re-extracted with a card from Supplier B, you still get **one** catalogue row — its `supplier` just updates to whichever card supplied it most recently. Verified live.
 
-**`card` is required only on `POST /api/ai/extract/`** — it's the one endpoint tying a catalogue extraction to the business card it was scanned alongside. Bulk-upload endpoints have no card concept (there's no card photo involved in a spreadsheet import).
-
-Along the way, also fixed a real bug: `POST /api/ai/extract/` was calling the AI vision extraction **twice** per PDF request (leftover from a botched merge) — double cost, double time, for the exact same result. Verified live: an 8-page PDF now runs in ~27s / ~$0.10, matching a single pass.
+Along the way (previous update), also fixed a real bug: `POST /api/ai/extract/` was calling the AI vision extraction **twice** per PDF request (leftover from a botched merge) — double cost, double time, for the exact same result. Verified live: an 8-page PDF now runs in ~27s / ~$0.10, matching a single pass.
 
 ---
 
-## 1. Extract catalogue — `POST /api/ai/extract/` (or `POST /api/ai/suppliers/{supplier_id}/extract/`)
+## 1. Extract catalogue — `POST /api/ai/extract/`
 
 Extracts product listings from a PDF catalogue **or** a set of catalogue photos using AI vision. One PDF *or* multiple photos per request — never both, never more than one PDF.
 
@@ -52,8 +48,7 @@ Extracts product listings from a PDF catalogue **or** a set of catalogue photos 
 
 | Field | Required | Notes |
 |---|---|---|
-| `card` | **yes** | id of an `AIBusinessCard` (create one first via `POST /api/ai/cards/`) |
-| `supplier` | **yes**, unless using the `/suppliers/{supplier_id}/extract/` URL | id of a `Supplier` — via URL path or this field, either works |
+| `card` | **yes** | id of an `AIBusinessCard` (create one first via `POST /api/ai/cards/`). Its `supplier` is automatically inherited by this catalogue — there's no separate `supplier` field here. |
 | `file` (repeatable) | yes | the PDF, or one or more photo files. Repeat the key `file` for multiple photos (`files` / `files[]` also accepted) |
 | `page_mode` | required for PDFs | `full`, `first_n`, or `range`. Optional for photos (defaults to `full`) |
 | `page_count` | required if `page_mode=first_n` | integer, e.g. `5` |
@@ -66,12 +61,13 @@ Rules enforced by the server:
 - Max file size: 50 MB per file.
 - Max pages per request: `AI_MAX_PAGES_PER_REQUEST` (currently **100**).
 - Can't mix a PDF and photos in the same request. Only one PDF per request (photos can be multiple).
-- Missing/invalid `card` or `supplier` → clean `400`, e.g. `{"card": "This field may not be null."}` or `{"supplier": "This field is required."}` / `{"supplier": "Invalid supplier id."}`.
+- Missing/invalid `card` → clean `400`, e.g. `{"card": "This field may not be null."}` or `{"card": "No business card found for that id."}`.
+- A `supplier` field in the body, if sent anyway, is silently ignored — the card's own supplier always wins. No need to remove it from old client code, it just won't do anything.
 
-### Example — PDF, first 5 pages, supplier via URL
+### Example — PDF, first 5 pages
 
 ```
-POST /api/ai/suppliers/7/extract/
+POST /api/ai/extract/
 Content-Type: multipart/form-data
 
 card       = 3
@@ -81,23 +77,10 @@ page_count = 5
 model_tier = high_accuracy
 ```
 
-### Example — same thing, supplier via body instead
-
-```
-POST /api/ai/extract/
-Content-Type: multipart/form-data
-
-card       = 3
-supplier   = 7
-file       = catalogue.pdf
-page_mode  = first_n
-page_count = 5
-```
-
 ### Example — multiple photos
 
 ```
-POST /api/ai/suppliers/7/extract/
+POST /api/ai/extract/
 Content-Type: multipart/form-data
 
 card = 3

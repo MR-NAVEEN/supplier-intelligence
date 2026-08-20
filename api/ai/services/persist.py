@@ -33,9 +33,12 @@ def _search_text(name, sku, series, description, attributes):
 
 def get_or_create_catalogue(workspace, filename, total_pages, user, card=None, supplier=None):
     filename = filename or 'catalogue.pdf'
+    # supplier (like business_card) is a tag, not part of the lookup -- the real
+    # uniqueness key is just (workspace, source_filename), so re-extracting the same
+    # file always updates the same catalogue regardless of which card/supplier this
+    # particular run carries.
     catalogue, _created = AICatalogue.objects.get_or_create(
         workspace=workspace,
-        supplier=supplier,
         source_filename=filename,
         defaults={
             'title': _title_from_filename(filename),
@@ -43,6 +46,7 @@ def get_or_create_catalogue(workspace, filename, total_pages, user, card=None, s
             'total_pages': total_pages or 0,
             'created_by': user,
             'business_card': card,
+            'supplier': supplier,
         },
     )
     update_fields = []
@@ -52,6 +56,9 @@ def get_or_create_catalogue(workspace, filename, total_pages, user, card=None, s
     if card and catalogue.business_card_id != card.id:
         catalogue.business_card = card
         update_fields.append('business_card')
+    if supplier and catalogue.supplier_id != supplier.id:
+        catalogue.supplier = supplier
+        update_fields.append('supplier')
     if update_fields:
         catalogue.save(update_fields=update_fields + ['updated_at'])
     return catalogue

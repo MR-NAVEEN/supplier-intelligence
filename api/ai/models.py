@@ -108,7 +108,7 @@ class AICatalogue(WorkspaceScopedModel):
 
     class Meta:
         ordering = ('-created_at',)
-        unique_together = ('workspace', 'supplier', 'source_filename')
+        unique_together = ('workspace', 'source_filename')
 
     def __str__(self):
         return self.title

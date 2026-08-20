@@ -33,12 +33,12 @@ urlpatterns = [
     path('bulk-upload/', AIBulkUploadView.as_view(), name='ai-bulk-upload'),
     path('cards/bulk-upload/', AICardBulkUploadView.as_view(), name='ai-cards-bulk-upload'),
 
-    # Supplier-scoped routes: same views, supplier_id read from the URL instead of
-    # (or in addition to) the request body. Writes still require a valid supplier_id
-    # either way; these just let it live in the path.
+    # Supplier-scoped routes: mostly GET filters (supplier_id from the URL instead of
+    # ?supplier=). Note extract/ is GET-only here -- POST isn't, since supplier on a
+    # catalogue is derived from the card you pass, not settable directly.
     path(
         'suppliers/<int:supplier_id>/extract/',
-        AIExtractionRunViewSet.as_view({'get': 'list', 'post': 'create'}),
+        AIExtractionRunViewSet.as_view({'get': 'list'}),
         name='ai-supplier-extract',
     ),
     path(
