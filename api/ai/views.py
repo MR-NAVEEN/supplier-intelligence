@@ -356,7 +356,7 @@ class AICatalogueProductViewSet(AIOpenViewSetMixin, viewsets.GenericViewSet, mix
 
 
 class NoteViewSet(AIOpenViewSetMixin, viewsets.ModelViewSet):
-    queryset = Note.objects.select_related('business_card', 'created_by').prefetch_related('attachments').all()
+    queryset = Note.objects.select_related('business_card', 'created_by').all()
     serializer_class = NoteSerializer
     http_method_names = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options']
 
@@ -366,7 +366,7 @@ class NoteViewSet(AIOpenViewSetMixin, viewsets.ModelViewSet):
         return NoteSerializer
 
     def get_queryset(self):
-        qs = Note.objects.select_related('business_card', 'created_by').prefetch_related('attachments')
+        qs = Note.objects.select_related('business_card', 'created_by')
         business_card = self.request.query_params.get('business_card')
         if business_card:
             qs = qs.filter(business_card_id=business_card)

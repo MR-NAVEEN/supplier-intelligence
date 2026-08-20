@@ -475,7 +475,6 @@ class AIAttachmentSerializer(serializers.ModelSerializer):
 
 
 class NoteSerializer(serializers.ModelSerializer):
-    attachments = AIAttachmentSerializer(many=True, read_only=True)
 
     class Meta:
         model = Note
@@ -485,15 +484,13 @@ class NoteSerializer(serializers.ModelSerializer):
             'title',
             'description',
             'created_by',
-            'attachments',
             'created_at',
             'updated_at',
         )
-        read_only_fields = ('id', 'created_by', 'attachments', 'created_at', 'updated_at')
+        read_only_fields = ('id', 'created_by', 'created_at', 'updated_at')
 
 
 class NoteListSerializer(serializers.ModelSerializer):
-    attachments_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Note
@@ -503,14 +500,10 @@ class NoteListSerializer(serializers.ModelSerializer):
             'title',
             'description',
             'created_by',
-            'attachments_count',
             'created_at',
             'updated_at',
         )
         read_only_fields = fields
-
-    def get_attachments_count(self, obj):
-        return obj.attachments.count()
 
 
 class AIBusinessCardListSerializer(serializers.ModelSerializer):
